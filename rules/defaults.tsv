@@ -1,0 +1,21 @@
+# proofgate default rules
+# Columns (TAB-separated): id, tool, scope, pattern, action, reason
+#   tool:    bash | edit | any
+#   scope:   regex matched against cwd; * = everywhere
+#   pattern: regex anchored at the start of each command head (bash) or
+#            searched in file_path/content (edit). Optional guard prefix:
+#              outside-cwd-tmp:  fires only if a path argument resolves outside cwd and temp dirs
+#              dirty-repo:       fires only if the cwd git repo has uncommitted changes
+#   action:  deny | ask | require-token (single-use token minted by bin/pg-grant)
+#   reason:  shown to the model; {head} expands to the matched command head
+# User overlay: $CLAUDE_PLUGIN_DATA/rules.local.tsv (a row with the same id replaces a default).
+rm-rf-outside-cwd	bash	*	outside-cwd-tmp:rm(?=\s)(?=.*(\s-(?!-)\w*r|\s--recursive\b))(?=.*(\s-(?!-)\w*f|\s--force\b))	deny	Recursive force-delete targets paths outside the working directory and temp dirs: {head}. Re-scope the deletion to the project tree or /tmp, or ask the user to run it themselves.
+git-discard-dirty	bash	*	dirty-repo:git\s+(reset(?=.*\s--hard\b)|clean(?=.*(\s-(?!-)\w*f|\s--force\b)))	require-token	{head} permanently discards uncommitted changes in a dirty repo.
+git-push-force	bash	*	git\s+push(?!.*--force-with-lease)(?=.*(\s-(?!-)\w*f\w*\b|\s--force\b|\s\+\S+))	deny	Force push rewrites remote history. Use --force-with-lease instead (it refuses to overwrite commits you have not seen): git push --force-with-lease <remote> <branch>.
+git-commit-no-verify	bash	*	git\s+commit(?=.*\s--no-verify\b)	ask	git commit --no-verify skips this repo's commit hooks. Confirm with the user before bypassing checks.
+chmod-777	bash	*	chmod(?=\s)(?=.*(\s-(?!-)\w*R|\s--recursive\b))(?=.*\s0?777\b)	ask	{head} makes the whole tree world-writable. Confirm with the user; prefer the narrowest mode that works.
+# --- Example custom rules: copy into $CLAUDE_PLUGIN_DATA/rules.local.tsv and uncomment ---
+# Repo-scoped: merges in repos matching 'my-app' land only via the merge bot.
+# merge-via-bot	bash	my-app	gh\s+pr\s+merge	deny	Merges in my-app land via the merge bot; comment '/merge' on the PR instead of merging directly.
+# Terminal-workspace tools (e.g. cmux): closing a workspace kills its running processes.
+# workspace-close	bash	*	cmux\s+close-workspace	ask	Closing a terminal workspace (e.g. workspace-7) kills everything running in it: {head}. Confirm with the user first.

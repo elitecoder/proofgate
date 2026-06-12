@@ -1,0 +1,26 @@
+{
+  "name": "proofgate",
+  "owner": {
+    "name": "Mukul Sharma"
+  },
+  "description": "Marketplace for proofgate: receipt-or-it-did-not-happen verification gates, head-parsed command gating, and measured prompt injectors for Claude Code.",
+  "plugins": [
+    {
+      "name": "proofgate",
+      "source": "./",
+      "description": "Agents say done; proofgate asks for receipts. Stop-gate claim verification, head-parsed command gating with TTY-gated overrides, and measured prompt injectors for Claude Code.",
+      "version": "0.1.0",
+      "author": {
+        "name": "Mukul Sharma"
+      },
+      "license": "MIT",
+      "keywords": [
+        "claude-code",
+        "hooks",
+        "verification",
+        "safety",
+        "guardrails"
+      ]
+    }
+  ]
+}

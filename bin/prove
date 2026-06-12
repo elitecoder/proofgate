@@ -1,0 +1,55 @@
+#!/bin/sh
+# prove "<claim>" -- <command...>
+# Runs the command; requires exit 0 AND non-empty output, then writes a
+# receipt the proofgate Stop gate can cross-reference (keyed by cwd hash).
+
+usage() {
+    echo 'usage: prove "<claim>" -- <command...>' >&2
+    exit 2
+}
+
+[ "$#" -ge 3 ] || usage
+claim=$1
+[ -n "$claim" ] || usage
+shift
+[ "$1" = "--" ] || usage
+shift
+
+tmp=$(mktemp) || exit 1
+trap 'rm -f "$tmp"' EXIT
+
+"$@" >"$tmp" 2>&1
+ec=$?
+
+tail -n 40 "$tmp"
+
+if [ "$ec" -ne 0 ]; then
+    echo "PROVE FAILED, no receipt (exit $ec)"
+    exit 1
+fi
+if [ ! -s "$tmp" ]; then
+    echo "PROVE FAILED, no receipt (empty output)"
+    exit 1
+fi
+
+sha=$(git rev-parse HEAD 2>/dev/null) || sha=""
+# Must match the fallback used by stop_gate.py when CLAUDE_PLUGIN_DATA is
+# unset (prove runs inside the agent's Bash tool, not as a hook).
+data_dir=${CLAUDE_PLUGIN_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/proofgate}
+rdir="$data_dir/ledger/receipts"
+mkdir -p "$rdir" 2>/dev/null || { echo "PROVE FAILED, no receipt (cannot create $rdir)"; exit 1; }
+
+python3 - "$claim" "$*" "$ec" "$sha" "$rdir" <<'PYEOF' || { echo "PROVE FAILED, no receipt (write error)"; exit 1; }
+import hashlib, json, os, sys, time
+claim, cmd, ec, sha, rdir = sys.argv[1:6]
+cwd = os.getcwd()
+key = hashlib.sha256(cwd.encode("utf-8", "replace")).hexdigest()[:16]
+rec = {"claim": claim, "cmd": cmd, "exit": int(ec), "sha": sha or None,
+       "cwd": cwd, "ts": time.time()}
+path = os.path.join(rdir, key + ".jsonl")
+with open(path, "a") as f:
+    f.write(json.dumps(rec) + "\n")
+print("PROVED: %s" % claim)
+print("receipt: %s" % path)
+PYEOF
+exit 0
