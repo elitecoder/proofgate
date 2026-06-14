@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STOP = ROOT / "scripts" / "verify-gate" / "stop-gate.sh"
 MARK = ROOT / "scripts" / "verify-gate" / "mark-dirty.sh"
 PROVE = ROOT / "bin" / "prove"
+PROVE_COV = ROOT / "bin" / "prove-cov"
 
 
 def run_stop(payload, data_dir, raw=None):
@@ -34,6 +35,16 @@ def run_prove(args, cwd, data_dir):
     return subprocess.run(["sh", str(PROVE)] + list(args), cwd=str(cwd),
                           capture_output=True, text=True, env=env,
                           timeout=60)
+
+
+def run_prove_cov(args, cwd, data_dir, extra_path=None):
+    env = dict(os.environ)
+    env["CLAUDE_PLUGIN_DATA"] = str(data_dir)
+    if extra_path:
+        env["PATH"] = str(extra_path) + os.pathsep + env.get("PATH", "")
+    return subprocess.run(["sh", str(PROVE_COV)] + list(args), cwd=str(cwd),
+                          capture_output=True, text=True, env=env,
+                          timeout=120)
 
 
 def block_of(result):

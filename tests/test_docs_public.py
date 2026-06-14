@@ -94,17 +94,17 @@ def test_readme_required_content():
     assert '"llm_judge": false' in text
 
 
-def test_failure_modes_has_exactly_12():
+def test_failure_modes_has_exactly_13():
     text = FAILURE_MODES.read_text()
     modes = re.findall(r"^### \d+\.", text, re.M)
-    assert len(modes) == 12, f"expected 12 numbered modes, found {len(modes)}"
-    assert [int(m.split()[1].rstrip(".")) for m in modes] == list(range(1, 13))
+    assert len(modes) == 13, f"expected 13 numbered modes, found {len(modes)}"
+    assert [int(m.split()[1].rstrip(".")) for m in modes] == list(range(1, 14))
 
 
 def test_failure_modes_each_names_a_proofgate_piece():
     text = FAILURE_MODES.read_text()
     sections = re.split(r"^### \d+\.", text, flags=re.M)[1:]
-    assert len(sections) == 12
+    assert len(sections) == 13
     for i, sec in enumerate(sections, 1):
         assert "**proofgate piece.**" in sec, f"mode {i} missing proofgate piece"
 

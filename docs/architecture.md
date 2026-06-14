@@ -57,7 +57,7 @@ $CLAUDE_PLUGIN_DATA/
 ├── ledger/
 │   ├── <session_id>.jsonl            # per-session action ledger
 │   └── receipts/
-│       └── <cwd-hash>.jsonl          # bin/prove receipts, keyed by sha256(cwd)[:16]
+│       └── <cwd-hash>.jsonl          # bin/prove + bin/prove-cov receipts, keyed by sha256(cwd)[:16]
 └── state/
     ├── <session_id>.blocks           # stop-gate block counter (2-block loop cap)
     ├── notify-throttle-<session_id>.json
@@ -66,10 +66,11 @@ $CLAUDE_PLUGIN_DATA/
 
 Two fallbacks exist for processes that run without `$CLAUDE_PLUGIN_DATA` in their
 environment: `bin/pg-grant` and the gatekeeper fall back to `~/.claude/proofgate`
-(they must agree on token paths), and `bin/prove` and the Stop gate fall back to
-`$XDG_DATA_HOME/proofgate` (default `~/.local/share/proofgate`) because `prove`
-runs inside the agent's Bash tool, where the hook env is not exported. The Stop
-gate reads receipts from both the data dir and the prove fallback.
+(they must agree on token paths), and `bin/prove` / `bin/prove-cov` and the Stop
+gate fall back to `$XDG_DATA_HOME/proofgate` (default `~/.local/share/proofgate`)
+because the prove helpers run inside the agent's Bash tool, where the hook env is
+not exported. The Stop gate reads receipts from both the data dir and the prove
+fallback.
 
 ### Session ledger (`ledger/<session_id>.jsonl`)
 
@@ -96,6 +97,19 @@ What the Stop gate enforces from the ledger:
   receipt is recorded after the edit. The ledger records reds too, but
   red-*first* discipline is `/repro-test` skill prose in this release, not a
   hook guarantee.
+- (`vacuous_test` tier, off by default) A *strong* end-to-end claim
+  ("validated end-to-end", "exercised the real code path") made after editing
+  a production (non-test) file must be backed by real-path evidence: an
+  `e2e_run`-class command (`playwright`, `cypress`) that ran *after* the edit,
+  or a `prove-cov` receipt whose `covered` paths include an edited production
+  file (matched by path-suffix, not bare basename). A unit runner alone does
+  not clear it, an informational no-op (`playwright --version`, `--list`) is
+  not an `e2e_run`, and a send-class command is not accepted (a `curl` proves
+  a request, not that the edited code made it). The trigger is a precision
+  tripwire on validation-verb phrasing (not the noun phrase "an end-to-end
+  test"); measured benign fire-rate 0% on a 53-line corpus, recall low by
+  design (see failure mode 7). The honest limit: coverage proves a line ran,
+  not that it ran un-mocked.
 
 ### Prove receipts (`ledger/receipts/<cwd-hash>.jsonl`)
 
@@ -105,6 +119,19 @@ non-empty output before recording:
 ```json
 {"claim":"tests pass after edits","cmd":"python3 -m pytest","exit":0,"sha":"a1b2c3...","cwd":"/home/user/my-app","ts":1765500785.2}
 ```
+
+`bin/prove-cov "<claim>" <file>... -- <command...>` writes the same shape plus
+a `covered` list — the named files coverage.py measured as executing >0 lines
+under the command. The `vacuous_test` tier reads `covered` to confirm an
+edited production file actually ran; a plain `prove` receipt (no `covered`
+key) is exit-0 evidence only and does not clear that tier:
+
+```json
+{"claim":"end-to-end","cmd":"-m pytest e2e/","exit":0,"sha":"a1b2c3...","cwd":"/home/user/my-app","ts":1765500799.4,"covered":["src/mutation_probe.py"]}
+```
+
+Honest limit: `covered` proves a line executed, not that it executed against
+an un-mocked collaborator (a mock behind a covered line is invisible here).
 
 ### Grant tokens (`tokens/<rule-id>.token`)
 

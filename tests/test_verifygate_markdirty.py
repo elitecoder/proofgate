@@ -111,6 +111,29 @@ def test_classes_for_npm_test():
     assert "test_run" in pg.bash_classes("python3 -m pytest -q")
 
 
+def test_e2e_run_class_for_browser_runners():
+    for cmd in ("npx playwright test", "playwright test e2e/",
+                "npx cypress run", "pnpm e2e", "npm run test:e2e",
+                "yarn run e2e:ci"):
+        assert "e2e_run" in pg.bash_classes(cmd), cmd
+
+
+def test_unit_runner_is_not_e2e_run():
+    for cmd in ("python3 -m pytest -q", "npm run test:unit", "go test ./...",
+                "vitest run", "jest"):
+        assert "e2e_run" not in pg.bash_classes(cmd), cmd
+
+
+def test_e2e_noop_invocations_are_not_e2e_run():
+    # A no-op token must not be mistaken for a real suite run (adversarial H3):
+    # appending `npx playwright --version` would otherwise clear the gate.
+    for cmd in ("npx playwright --version", "npx playwright info",
+                "npx cypress version", "cypress info", "playwright --version",
+                "npx playwright test --list", "playwright test --dry-run",
+                "playwright show-report"):
+        assert "e2e_run" not in pg.bash_classes(cmd), cmd
+
+
 def test_deferral_artifact_classes():
     assert "deferral_artifact" in pg.bash_classes(
         "gh issue create -t flaky")
