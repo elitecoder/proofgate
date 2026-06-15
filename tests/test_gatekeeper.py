@@ -200,6 +200,38 @@ def test_no_verify_asks():
 
 
 @pytest.mark.parametrize("cmd", [
+    # git global options between `git` and the subcommand must not hide it.
+    "git -c user.email=a@b.com -c user.name='M S' commit --no-verify -m x",
+    "git -C /repo commit --no-verify",
+    "git --git-dir=/r/.git --work-tree=/r commit --no-verify -m x",
+])
+def test_no_verify_asks_through_git_global_opts(cmd):
+    # Regression: HEAD_CORE_TOKENS + `-c k=v` flags shoved `commit` out of the
+    # head window, so `git commit --no-verify` slipped past silently.
+    assert decision(run_eval(cmd)) == "ask", cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "git -c push.default=current push --force origin main",
+    "git -C /repo push -f origin main",
+])
+def test_force_push_denied_through_git_global_opts(cmd):
+    # Same blind spot, force-push rule.
+    res = run_eval(cmd)
+    assert decision(res) == "deny", cmd
+    assert "--force-with-lease" in reason(res)
+
+
+@pytest.mark.parametrize("cmd", [
+    "git -c color.ui=always log --oneline",   # global opt, benign subcommand
+    "git -C /repo status",
+])
+def test_git_global_opts_benign_subcommands_dont_fire(cmd):
+    # Stripping global opts must not over-fire on harmless subcommands.
+    assert run_eval(cmd) is None, cmd
+
+
+@pytest.mark.parametrize("cmd", [
     "chmod -R 777 .",
     "chmod 777 -R public/",
     "chmod --recursive 0777 /srv/www",

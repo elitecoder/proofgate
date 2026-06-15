@@ -299,6 +299,40 @@ def _shell_c_payload(tokens):
     return None
 
 
+# git global options that sit BETWEEN `git` and the subcommand. The
+# value-taking ones consume the following token when written space-separated
+# (`-c name=value`, `-C path`); the `--opt=value` form is a single token.
+_GIT_GLOBAL_VALUE_OPTS = {"-C", "-c", "--git-dir", "--work-tree", "--namespace",
+                          "--super-prefix", "--exec-path", "--config-env"}
+
+
+def _collapse_git_global_opts(tokens):
+    """Drop git's global options so the subcommand becomes token[1].
+
+    `git -c user.email=x commit --no-verify` would otherwise have a head of
+    `git -c user.email=x -c ...` (HEAD_CORE_TOKENS tokens + later -flags) in
+    which the subcommand `commit` — a non-flag token shoved past the core
+    window — never appears, so `git\\s+commit` rules silently miss it. This
+    repairs all git subcommand rules (commit --no-verify, push --force,
+    reset --hard) under the `git <global-opts> <subcommand>` form. Conservative:
+    strips only leading `-`-options after `git` (plus the value of the
+    space-separated value-taking ones); stops at the first non-option token.
+    """
+    if not tokens or os.path.basename(tokens[0]) != "git":
+        return tokens
+    i = 1
+    n = len(tokens)
+    while i < n:
+        t = tokens[i]
+        if not t.startswith("-"):
+            break  # the subcommand
+        if t in _GIT_GLOBAL_VALUE_OPTS and "=" not in t:
+            i += 2  # skip the option and its space-separated value
+            continue
+        i += 1
+    return [tokens[0]] + tokens[i:]
+
+
 def extract_heads(command, _depth=0):
     """Return [(head, guard_args)] for every executable segment.
 
@@ -323,6 +357,7 @@ def extract_heads(command, _depth=0):
             inner = _shell_c_payload(tokens)
             if inner:
                 heads.extend(extract_heads(inner, _depth + 1))
+        tokens = _collapse_git_global_opts(tokens)
         head_tokens = tokens[:HEAD_CORE_TOKENS] + [
             t for t in tokens[HEAD_CORE_TOKENS:] if t.startswith("-")]
         args = []

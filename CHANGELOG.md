@@ -29,6 +29,18 @@ All notable changes to proofgate are documented here. Format follows
 - Failure mode 7 (vacuous green) added to the field guide, with its honest
   residual stated: coverage proves a line ran, not that it ran un-mocked.
 
+### Fixed
+
+- **Gatekeeper missed git subcommand rules under `git <global-opts> <subcommand>`.**
+  `git`'s global options (`-c name=value`, `-C path`, `--git-dir=…`) sit between
+  `git` and the subcommand; combined with the 4-token head window they pushed the
+  subcommand out of the matched head entirely, so `git -c user.email=… commit
+  --no-verify` (and the same shape for `push --force` / `reset --hard`) slipped
+  past silently. Head extraction now strips git's leading global options so the
+  real subcommand surfaces. Repairs all three git rules at once; added regression
+  tests for the `-c`/`-C`/`--git-dir`/`--work-tree` forms plus benign-subcommand
+  controls.
+
 ## [0.1.0] - 2026-06-11
 
 Initial release.
