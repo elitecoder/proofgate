@@ -22,6 +22,7 @@ DEFAULT_GATES = {
     "red_green": True,
     "promissory": True,
     "deferral": True,
+    "vacuous_test": False,
     "llm_judge": False,
 }
 
@@ -32,6 +33,51 @@ TESTS_CLAIM_RE = re.compile(
     r"(?:are\s+|all\s+|now\s+|still\s+)*(?:pass(?:ing|ed|es)?|green)\b"
     r"|\btest\s+suite\s+(?:passes|passed|is\s+green)\b"
     r"|\be2e\s+pass(?:ed|es|ing)?\b",
+    re.I)
+
+# A STRONGER claim than "tests pass": an explicit assertion that the real code
+# path was exercised end-to-end. This is a PRECISION-tuned tripwire for the
+# common overclaim phrasing, NOT an airtight classifier — it is deliberately
+# easy to phrase around (recall is low by design; see failure mode 7). It must
+# fire on the VALIDATION-VERB claim ("validated end-to-end", "exercised the
+# real code path"), never on a noun phrase that describes a test artifact
+# ("added an end-to-end test") or on thorough-unit phrasing ("fully tested
+# locally") — those are benign and would make this a noisy regex.
+#
+# Two earlier-drafted branches were CUT after adversarial measurement on an
+# affirmative benign corpus: a bare "fully <verb>" branch (fired on the common
+# honest "fully tested locally") and a broad "real/production <noun>" branch
+# with nouns like server/api/endpoint (fired on "the production API key",
+# "restarted the real server"). The trigger now anchors on the canonical
+# strong phrases only: "<verb> ... end-to-end" and "(real|actual|production|
+# live) (code) path/pipeline ... <exercise verb>". Negation is stripped by the
+# shared NEG_TAIL_RE; active future by STRONG_FUTURE_RE. Measured benign
+# fire-rate is in the PR and pinned by test_verifygate_vacuous_fprate.py.
+_RPATH = r"(?:real|actual|production|live)\s+(?:code[\s-]?)?(?:path|paths|pipeline)"
+STRONG_CLAIM_RE = re.compile(
+    # verb-of-validation + (optional short object) + "end-to-end"
+    r"\b(?:validat|verif|exercis|confirm|tested)\w*\s+"
+    r"(?:it\s+|this\s+|that\s+|the\s+(?:\w+\s+){0,2}|everything\s+|fully\s+)?"
+    r"end[\s-]?to[\s-]?end\b"
+    # exercise-verb + "the real/production code path/pipeline"
+    r"|\b(?:exercis\w*|cover\w*|hit|ran|run|tested|validat\w*|verif\w*)\s+"
+    r"(?:against\s+)?(?:the\s+|a\s+)?" + _RPATH + r"\b"
+    # "the real code path is/was exercised/covered/tested/run"
+    r"|\b(?:the\s+)?" + _RPATH + r"\s+"
+    r"(?:is|was|are|were|now)\s+(?:fully\s+|now\s+)?"
+    r"(?:exercis\w*|cover\w*|tested|run|hit|validat\w*|verif\w*)",
+    re.I)
+
+# The strong claim's verbs share a stem across tenses (validat\w* matches both
+# "validated" and "validate"), so active future ("I will validate ...", "going
+# to verify ...") leaks past the shared NEG_TAIL_RE, which only knows the
+# passive form ("will be validated"). Broadening the shared guard would
+# re-tune the push/send/tests gates; instead suppress active future locally,
+# just for this trigger.
+STRONG_FUTURE_RE = re.compile(
+    r"(?:\bI'?ll|\bwe'?ll|\bwill|\bgoing\s+to|\bplan(?:ning|s)?\s+(?:to|on)"
+    r"|\bintend(?:ing|s)?\s+to|\bneed\s+to|\bwant\s+to)"
+    r"\s*(?:\w+[\s,]+){0,2}$",
     re.I)
 
 # A claim preceded by negation/futurity is not a claim.
@@ -143,6 +189,18 @@ def claim_match(text, rx):
     return None
 
 
+def strong_claim_match(text):
+    """A live (non-negated, non-future) strong end-to-end claim, or None.
+    Adds an active-future guard ("I will validate ...") on top of the shared
+    negation guard, because the strong verbs share a stem across tenses."""
+    for m in STRONG_CLAIM_RE.finditer(text):
+        prefix = text[max(0, m.start() - 40):m.start()]
+        if NEG_TAIL_RE.search(prefix) or STRONG_FUTURE_RE.search(prefix):
+            continue
+        return m
+    return None
+
+
 def _unpushed_count(cwd):
     """Commits ahead of upstream; None = not a repo / no upstream / no git."""
     try:
@@ -195,6 +253,36 @@ def _f(v):
         return 0.0
 
 
+def _norm(p):
+    return str(p or "").replace("\\", "/").strip().rstrip("/")
+
+
+def _paths_match(a, b):
+    """True if two file paths plausibly name the same file: equal after
+    normalization, or one is a path-suffix of the other on a path-segment
+    boundary (so src/foo.py matches /repo/src/foo.py but NOT src/barfoo.py).
+    Basename-only equality is intentionally NOT enough — pkg_a/models.py and
+    pkg_b/models.py are different files (adversarial finding C1)."""
+    a, b = _norm(a), _norm(b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+    return hi.endswith("/" + lo)
+
+
+def _covered_paths(recs):
+    """Paths a prove-cov receipt recorded as executed (>0 lines). Plain prove
+    receipts have no 'covered' key and contribute nothing."""
+    out = []
+    for r in recs:
+        cov = r.get("covered")
+        if isinstance(cov, list):
+            out.extend(str(c) for c in cov if c)
+    return out
+
+
 def _prove_cmd():
     root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     return os.path.join(root, "bin", "prove") if root else "bin/prove"
@@ -214,6 +302,25 @@ def evaluate(final, tools, cwd, dd, sid, cfg, gates):
     edit_idxs = [t["idx"] for t in tools
                  if t["name"] in EDIT_TOOLS and t["ok"]]
     test_run_idxs = [t["idx"] for t in ok_bash if "test_run" in t["classes"]]
+
+    # Production (non-test) files edited this session, by basename. The
+    # vacuous_test tier asks: was the real code path actually exercised, or
+    # only a unit harness around it?
+    prod_edit_paths = set()
+    prod_edit_idxs = []
+    for t in tools:
+        if t["name"] in EDIT_TOOLS and t["ok"]:
+            p = str((t["input"] or {}).get("file_path") or
+                    (t["input"] or {}).get("notebook_path") or "")
+            if p and not pg.is_test_path(p):
+                prod_edit_paths.add(p)
+                prod_edit_idxs.append(t["idx"])
+    # Only an e2e/browser runner counts as real-path evidence here. A
+    # send-class command (curl/mail) is NOT accepted: it proves a request was
+    # made, not that the edited code path produced it, and `curl --help` would
+    # trivially clear the claim. The honest escapes are an e2e run, a covering
+    # prove-cov receipt, honest phrasing, or UNVERIFIED:.
+    e2e_run_idxs = [t["idx"] for t in ok_bash if "e2e_run" in t["classes"]]
 
     cache = {}
 
@@ -290,6 +397,46 @@ def evaluate(final, tools, cwd, dd, sid, cfg, gates):
                         "Run: %s \"tests pass after edits\" -- <test command>"
                         "\nOr restate prefixed with UNVERIFIED:."
                         % (", ".join(paths[:3]), _prove_cmd()))
+
+    # c2. VACUOUS-TEST: a STRONG claim ("validated end-to-end", "exercised the
+    # real code path") after editing production code, but the only evidence is
+    # a unit runner. A mocked unit test goes green without touching the real
+    # subprocess/server/browser, so a unit pass cannot back an end-to-end
+    # claim. Clears on real-path evidence: an e2e/browser runner after the
+    # edit, or a prove-cov receipt that covered an edited production file.
+    # Off by default (config-gated) — measured fire-rate is in the PR.
+    if gates.get("vacuous_test") and prod_edit_paths:
+        strong = strong_claim_match(text)
+        if strong:
+            # The real-path run must come AFTER the last production edit —
+            # exercising the old code then editing it proves nothing about the
+            # claim (mirrors the tests-pass tier's post-edit ordering).
+            last_prod_edit = max(prod_edit_idxs)
+            last_real_run = max(e2e_run_idxs) if e2e_run_idxs else -1
+            has_real_run = last_real_run > last_prod_edit
+            # prove-cov runs in the agent's Bash tool, so it is timestamped,
+            # not tool-ordered; accept any covering receipt (the gate cannot
+            # align receipt ts with tool idx, and a coverage receipt for the
+            # edited file is strong positive evidence regardless). Match by
+            # path-suffix, not bare basename, so models.py in one package does
+            # not vouch for models.py in another.
+            covered = _covered_paths(receipts())
+            covers_edit = any(_paths_match(c, e)
+                              for c in covered for e in prod_edit_paths)
+            if not has_real_run and not covers_edit:
+                edited = sorted(os.path.basename(p) for p in prod_edit_paths)
+                return ("Unverified claim '%s': you edited production code "
+                        "(%s) and claimed the real path ran, but only a unit "
+                        "runner did — a mocked unit test passes without "
+                        "exercising the real subprocess/server/browser. Prove "
+                        "the real path with one of:\n"
+                        "  - an e2e/browser run (playwright, cypress), or\n"
+                        "  - %s-cov \"end-to-end\" <file> -- <command that runs "
+                        "the real path under coverage>\n"
+                        "Or, if you only ran unit tests, say so plainly "
+                        "(\"unit tests pass\") or prefix with UNVERIFIED:."
+                        % (strong.group(0).strip(), ", ".join(edited[:3]),
+                           _prove_cmd()))
 
     # d. PROMISSORY ending: ends on future action, not a question/handoff.
     if gates.get("promissory") and text.strip():

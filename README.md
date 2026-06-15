@@ -35,7 +35,7 @@ Read this table as the full disclosure of what the plugin will do to your sessio
 
 | Component | Type | What it does |
 |---|---|---|
-| **verify-gate** | `Stop` hook | Blocks "done" claims that lack receipts. Tier 1: claim→state cross-reference (pushed → git, sent → send-class command). Tier 2: test ledger — a session that edited test files cannot stop without a recorded post-edit green run or `prove` receipt. Tier 3: optional LLM judge — **off by default**. Also blocks endings that promise future action and deferral language with no artifact. Caps itself at 2 blocks per turn; `UNVERIFIED:` in the final message is the escape hatch. |
+| **verify-gate** | `Stop` hook | Blocks "done" claims that lack receipts. Tier 1: claim→state cross-reference (pushed → git, sent → send-class command). Tier 2: test ledger — a session that edited test files cannot stop without a recorded post-edit green run or `prove` receipt. Tier 3 (`vacuous_test`, **off by default**): a *strong* claim ("validated end-to-end", "exercised the real code path") after a production-code edit must be backed by real-path evidence — an e2e/browser run after the edit, or a `prove-cov` coverage receipt covering the edited file — not a unit pass. A precision tripwire (low recall by design), measured 0% benign fire-rate. Tier 4: optional LLM judge — **off by default**. Also blocks endings that promise future action and deferral language with no artifact. Caps itself at 2 blocks per turn; `UNVERIFIED:` in the final message is the escape hatch. |
 | **gatekeeper** | `PreToolUse` hook | Head-parses every command segment against the rules TSV (shipped defaults + your overlay); deny/ask/require-token on destructive heads. 0.73% measured fire-rate, all true positives. |
 | **pg-grant** | CLI | TTY-gated, time-boxed (15 min), single-use override tokens for `require-token` rules. Only a human at a real terminal can mint one — an agent cannot grant itself. |
 | **turn-context** | `UserPromptSubmit` hook | Injects a UTC timestamp plus a 4-line communication-register card into **every** prompt (~30 tokens — this is the one always-on injection). Direct-order prompts ("just do it", "stop asking" — 0.4% of corpus prompts) additionally get an authority card; pushback prompts (0.1%) get a re-verify-before-conceding card. |
@@ -45,6 +45,7 @@ Read this table as the full disclosure of what the plugin will do to your sessio
 | **/codify** | skill | Turns the correction you just typed into a self-tested gatekeeper rule instead of a sermon that decays. |
 | **/defer** | skill | Logs "I'll do that later" items as durable artifacts (DEFERRALS.md + GitHub issue) so deferred work survives the session instead of evaporating. |
 | **/repro-test** | skill | Baseline-red bug fixing: a failing reproduction is recorded before the fix, a green run and a `prove` receipt after. Skill-level discipline (model-followed prose), reinforced by the verify-gate's post-edit green requirement. |
+| **prove / prove-cov** | CLI | `prove` records a receipt when a command exits 0 with output. `prove-cov` additionally runs the command under coverage and records *which* files executed lines, so the `vacuous_test` tier can tell a real-path run from a mocked unit pass. Both write receipts the Stop gate reads. |
 | **/reliability-audit** | skill | Mines **your** local session transcripts, derives **your** failure modes, measures candidate rules against **your** corpus before you enable them. |
 
 ## The part that makes it yours: /reliability-audit
@@ -93,6 +94,7 @@ proofgate reads one optional config file, `config.json`, in the plugin's data di
     "red_green": true,
     "promissory": true,
     "deferral": true,
+    "vacuous_test": false,
     "llm_judge": false
   },
   "notify_heads": ["notify-send", "terminal-notifier"],
@@ -100,7 +102,7 @@ proofgate reads one optional config file, `config.json`, in the plugin's data di
 }
 ```
 
-Each `gates` key toggles one Stop-gate check (see [architecture](docs/architecture.md) for what each one verifies). The gatekeeper is configured through its rules files, not `config.json`; the turn-context injector, scope-budget, and agent-file-lint have no config switches in this release — disabling them means uninstalling or removing their `hooks/hooks.json` entries from your checkout.
+Each `gates` key toggles one Stop-gate check (see [architecture](docs/architecture.md) for what each one verifies). `vacuous_test` ships **off**: its trigger measures a 0% benign fire-rate (0 of 38 legitimate done-messages) but the signal is a claim/evidence-class mismatch, not proof of a mock (see [failure mode 7](docs/failure-modes.md)) — turn it on for sessions whose agents overclaim "end-to-end", leave it off otherwise. The gatekeeper is configured through its rules files, not `config.json`; the turn-context injector, scope-budget, and agent-file-lint have no config switches in this release — disabling them means uninstalling or removing their `hooks/hooks.json` entries from your checkout.
 
 Add your own command rules in `$CLAUDE_PLUGIN_DATA/rules.local.tsv` — a single overlay file, never touched by updates. A row whose id matches a shipped default replaces it (a never-matching pattern like `(?!)` disables one). See the [rules.tsv schema](docs/architecture.md#rulestsv-schema) and the measure-before-enable workflow.
 
@@ -131,7 +133,7 @@ Value scales with how hard you push agents.
 
 ## Docs
 
-- [The 12 failure modes — an anonymized field guide](docs/failure-modes.md)
+- [The failure modes — an anonymized field guide](docs/failure-modes.md)
 - [Architecture: events, scripts, state, schemas](docs/architecture.md)
 - [Changelog](CHANGELOG.md)
 

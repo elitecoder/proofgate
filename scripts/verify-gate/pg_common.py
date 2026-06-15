@@ -142,6 +142,12 @@ SEND_HEADS = {"curl", "wget", "http", "https", "mail", "mailx", "sendmail",
 TEST_HEADS = {"pytest", "py.test", "jest", "vitest", "mocha", "tox", "rspec",
               "phpunit", "ctest", "playwright", "behave", "nose2"}
 
+# Runners that drive a real browser / full stack rather than a mockable unit
+# harness. A "validated end-to-end" claim is satisfied by one of these (or a
+# send-class command, or a prove-cov coverage receipt) — never by a unit
+# runner alone. Heuristic allow-list, deliberately narrow; see failure mode 13.
+E2E_HEADS = {"playwright", "cypress"}
+
 _VALUE_FLAGS = {
     "git": {"-C", "-c", "--git-dir", "--work-tree", "--namespace"},
     "gh": {"-R", "--repo"},
@@ -197,6 +203,34 @@ def _is_test_runner(head, sub, sub2, rest):
     return False
 
 
+# Sub-commands/flags that mean "don't actually run the suite" — a no-op token
+# like `playwright --version`, `cypress info`, or `playwright test --list` must
+# not count as a real run (it would trivially clear the vacuous_test claim).
+_E2E_NOOP = {"--version", "-v", "version", "--help", "-h", "help", "info",
+             "install", "--list", "list", "codegen", "open", "--init", "init",
+             "--dry-run", "show-report", "merge-reports"}
+
+
+def _is_e2e_runner(head, sub, sub2, rest):
+    """True for runners that drive a real browser / full stack. A strict
+    subset of test runners — these cannot be satisfied by mocking out the
+    subprocess/network boundary the way a pure unit runner can. Any
+    informational token anywhere in the segment (--version, info, --list,
+    --dry-run, ...) disqualifies it: that invocation did not run the suite."""
+    if any(tok in _E2E_NOOP for tok in rest):
+        return False
+    if head in E2E_HEADS:
+        return True
+    if head == "npx":
+        return sub in {"playwright", "cypress"}
+    if head in {"npm", "pnpm", "yarn", "bun"}:
+        # `pnpm e2e`, `npm run test:e2e`, `yarn run e2e:ci`, ...
+        if sub in {"e2e", "e2e:ci"}:
+            return True
+        return sub == "run" and ("e2e" in sub2 or sub2.startswith("test:e2e"))
+    return False
+
+
 def classes_of(head, rest):
     cls = set()
     sub, sub2 = _sub_tokens(head, rest)
@@ -220,6 +254,8 @@ def classes_of(head, rest):
         cls.add("send")
     if _is_test_runner(head, sub, sub2, rest):
         cls.add("test_run")
+    if _is_e2e_runner(head, sub, sub2, rest):
+        cls.add("e2e_run")
     return cls
 
 

@@ -1,0 +1,145 @@
+#!/bin/sh
+# prove-cov "<claim>" <covered-file>... -- <command...>
+#
+# Like `prove`, but records WHICH files the command actually executed lines
+# in, so the Stop gate's vacuous_test tier can tell a real-path run from a
+# mocked unit pass. Runs <command> under coverage.py, requires exit 0 AND
+# non-empty output, then verifies each named <covered-file> shows >0 executed
+# lines in the coverage data. Writes a receipt with a "covered" list of the
+# REAL paths coverage measured (not the names you passed).
+#
+# Python only: coverage.py wraps a Python command. python/pytest/unittest/nose2
+# forms are normalized automatically; a non-Python runner (jest, npx
+# playwright, go test) cannot be wrapped and fails closed (no receipt) — use an
+# e2e/browser run for those.
+#
+# The honest limit (see failure mode 7): coverage proves a line RAN, not that
+# it ran against a real collaborator. A test that mocks the subprocess but
+# still calls the function under test will cover that function. prove-cov
+# raises the bar from "exit 0" to "the changed code executed"; it is not proof
+# of an un-mocked boundary. Use an e2e/browser run when that matters.
+
+usage() {
+    echo 'usage: prove-cov "<claim>" <covered-file>... -- <command...>' >&2
+    exit 2
+}
+
+[ "$#" -ge 4 ] || usage
+claim=$1
+[ -n "$claim" ] || usage
+shift
+
+files=""
+while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    files="$files$1
+"
+    shift
+done
+[ "$1" = "--" ] || usage
+shift
+[ "$#" -ge 1 ] || usage
+[ -n "$files" ] || usage
+
+# `coverage run` IS the python invocation. coverage.py can only wrap a PYTHON
+# command, so normalize the common forms into `coverage run` argument shape:
+#   python3 -m pytest      -> -m pytest        (strip the interpreter)
+#   python script.py       -> script.py        (strip the interpreter)
+#   pytest / py.test       -> -m pytest        (console-script -> module)
+#   unittest / nose2       -> -m unittest      (rewrite to module form)
+# A non-Python runner (jest, npx playwright, go test) cannot be wrapped by
+# coverage.py — for those, use an e2e/browser run instead of prove-cov; this
+# script will fail closed (no receipt) rather than mis-measure.
+case "$1" in
+    python|python3|python2|python3.*|python2.*) shift ;;
+    pytest|py.test) shift; set -- -m pytest "$@" ;;
+    unittest) shift; set -- -m unittest "$@" ;;
+    nose2) shift; set -- -m nose2 "$@" ;;
+esac
+[ "$#" -ge 1 ] || usage
+
+cov=""
+if command -v coverage >/dev/null 2>&1; then
+    cov="coverage"
+elif python3 -c "import coverage" >/dev/null 2>&1; then
+    cov="python3 -m coverage"
+else
+    echo "prove-cov: coverage.py not found. Install it: pip install coverage" >&2
+    echo "PROVE FAILED, no receipt (coverage.py missing)"
+    exit 1
+fi
+
+datafile=$(mktemp) || exit 1
+out=$(mktemp) || exit 1
+trap 'rm -f "$datafile" "$out"' EXIT
+
+COVERAGE_FILE="$datafile" $cov run "$@" >"$out" 2>&1
+ec=$?
+
+tail -n 40 "$out"
+
+if [ "$ec" -ne 0 ]; then
+    echo "PROVE FAILED, no receipt (exit $ec)"
+    exit 1
+fi
+if [ ! -s "$out" ]; then
+    echo "PROVE FAILED, no receipt (empty output)"
+    exit 1
+fi
+
+sha=$(git rev-parse HEAD 2>/dev/null) || sha=""
+data_dir=${CLAUDE_PLUGIN_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/proofgate}
+rdir="$data_dir/ledger/receipts"
+mkdir -p "$rdir" 2>/dev/null || { echo "PROVE FAILED, no receipt (cannot create $rdir)"; exit 1; }
+
+COVERAGE_FILE="$datafile" python3 - "$claim" "$*" "$ec" "$sha" "$rdir" "$files" <<'PYEOF' || { echo "PROVE FAILED, no receipt"; exit 1; }
+import hashlib, json, os, sys, time
+import coverage
+
+claim, cmd, ec, sha, rdir, files_blob = sys.argv[1:7]
+wanted = [f for f in files_blob.split("\n") if f.strip()]
+
+cov = coverage.Coverage(data_file=os.environ["COVERAGE_FILE"])
+cov.load()
+data = cov.get_data()
+measured = list(data.measured_files())
+
+# A named file is "covered" iff coverage measured >0 executed lines for the
+# SAME file: equal realpath, or the named path is a path-segment suffix of a
+# measured file. Bare basename equality is NOT enough — a same-named file in
+# another directory must not satisfy the receipt (adversarial finding C1). The
+# receipt records the measured file's real path, not the requested name, so the
+# Stop gate matches against what actually ran.
+def _seg_suffix(short, full):
+    short = short.replace("\\", "/").rstrip("/")
+    full = full.replace("\\", "/").rstrip("/")
+    return full == short or full.endswith("/" + short)
+
+
+covered = []
+for want in wanted:
+    want_real = os.path.realpath(want)
+    for mf in measured:
+        same = (os.path.realpath(mf) == want_real or
+                _seg_suffix(want, mf) or _seg_suffix(want, os.path.realpath(mf)))
+        if same and data.lines(mf):
+            covered.append(os.path.realpath(mf))
+            break
+
+if not covered:
+    sys.stderr.write(
+        "prove-cov: none of the named files executed any lines under this "
+        "command.\n  named: %s\n  measured: %s\n"
+        % (", ".join(wanted), ", ".join(os.path.basename(m) for m in measured[:8]) or "(none)"))
+    sys.exit(1)
+
+cwd = os.getcwd()
+key = hashlib.sha256(cwd.encode("utf-8", "replace")).hexdigest()[:16]
+rec = {"claim": claim, "cmd": cmd, "exit": int(ec), "sha": sha or None,
+       "cwd": cwd, "ts": time.time(), "covered": covered}
+path = os.path.join(rdir, key + ".jsonl")
+with open(path, "a") as f:
+    f.write(json.dumps(rec) + "\n")
+print("PROVED (covered: %s): %s" % (", ".join(covered), claim))
+print("receipt: %s" % path)
+PYEOF
+exit 0
