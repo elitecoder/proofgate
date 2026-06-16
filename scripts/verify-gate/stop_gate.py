@@ -16,14 +16,21 @@ import pg_common as pg
 MAX_BLOCKS_PER_TURN = 2
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 
+# The LLM judge subsumes the two claim-vs-text keyword tiers (checkable_claim,
+# promissory): it reads the summary against the session evidence and judges
+# whether an action-claim is unsupported, instead of firing on a bare keyword.
+# So those two default OFF when llm_judge is on. The remaining tiers are cheap
+# deterministic ledger checks the judge does not replace, and stay on. If the
+# LLM call fails it fails open (no block); set llm_judge False + the keyword
+# tiers True to fall back to the pure-deterministic gate.
 DEFAULT_GATES = {
+    "llm_judge": True,
+    "checkable_claim": False,
+    "promissory": False,
     "ship_state": True,
-    "checkable_claim": True,
     "red_green": True,
-    "promissory": True,
     "deferral": True,
     "vacuous_test": False,
-    "llm_judge": False,
 }
 
 PUSH_CLAIM_RE = re.compile(r"\b(pushed|merged|shipped)\b", re.I)
@@ -288,6 +295,82 @@ def _prove_cmd():
     return os.path.join(root, "bin", "prove") if root else "bin/prove"
 
 
+LLM_JUDGE_PROMPT = """You are a verification gate for a coding agent. The agent \
+just finished a turn and wrote a final summary to its user. Your job: decide whether \
+the summary makes a factual claim about an ACTION IT TOOK that the evidence does NOT \
+support.
+
+Block ONLY a claim of a concrete, verifiable action that the evidence contradicts or \
+leaves unsupported — e.g. "merged the PR", "pushed the branch", "sent the message", \
+"tests pass", "deployed". Do NOT block: plans ("I'll next..."), descriptions of what \
+code does, analysis, questions, hedged/UNVERIFIED statements, or a turn that simply \
+didn't do any such action (most turns write no PR and push nothing — that is normal \
+and fine, not a violation).
+
+Default to PASS. Block only when a specific action-claim is clearly unbacked by the \
+evidence below. When unsure, PASS.
+
+=== AGENT FINAL SUMMARY ===
+%(summary)s
+
+=== EVIDENCE (what actually happened this session) ===
+Actions recorded this session (durable ledger): %(ledger)s
+Command classes seen this turn: %(classes)s
+Git: %(git)s
+
+=== YOUR VERDICT ===
+Reply with EXACTLY one line:
+  PASS
+or
+  BLOCK <one sentence: which claim is unsupported and what to do>
+"""
+
+
+def _git_state(cwd):
+    """One-line upstream summary for the judge; '' if not a git repo."""
+    try:
+        n = _unpushed_count(cwd)
+        if n is None:
+            return "not a git repo / no upstream"
+        return "%d local commit(s) not pushed to upstream" % n
+    except Exception:
+        return "unknown"
+
+
+def llm_judge_verdict(text, ledger, session_classes, cwd, cfg):
+    """Ask an LLM to judge the summary against the evidence.
+
+    Returns a block-reason string, or None to PASS. Fails open (None) on any
+    error so the gate never wedges the session on a flaky model call.
+    """
+    cmd = cfg.get("llm_judge_cmd") or "claude --bare -p --model haiku"
+    actions = [e.get("kind") for e in ledger
+               if e.get("kind") in ("push", "send", "git_commit", "test_run")]
+    digest = ", ".join(sorted(set(actions))) or "(none recorded)"
+    prompt = LLM_JUDGE_PROMPT % {
+        "summary": text[:4000],
+        "ledger": digest,
+        "classes": ", ".join(sorted(session_classes)) or "(none)",
+        "git": _git_state(cwd),
+    }
+    try:
+        r = subprocess.run(cmd, shell=True, input=prompt,
+                           capture_output=True, text=True, timeout=45)
+    except Exception:
+        return None  # fail open
+    out = (r.stdout or "").strip()
+    # Take the last non-empty line as the verdict (models may preamble).
+    verdict = ""
+    for line in reversed(out.splitlines()):
+        if line.strip():
+            verdict = line.strip()
+            break
+    if verdict.upper().startswith("BLOCK"):
+        reason = verdict[5:].strip(" :-") or "claim not supported by session evidence"
+        return "LLM verify-gate: " + reason
+    return None  # PASS, or unparseable → fail open
+
+
 def evaluate(final, tools, cwd, dd, sid, cfg, gates):
     text = final.replace("’", "'")
     ok_bash = []
@@ -348,6 +431,20 @@ def evaluate(final, tools, cwd, dd, sid, cfg, gates):
         _k = _e.get("kind")
         if _k in ("push", "send", "git_commit", "test_run"):
             session_classes.add(_k)
+
+    # LLM judge (default tier). When on, an LLM reads the summary together with
+    # the session evidence (ledger actions, command classes, git state) and
+    # decides whether any action-claim is unsupported — instead of the brittle
+    # keyword tiers below, which fire on the word "merged" even in a turn that
+    # legitimately pushed nothing. The judge is told most turns take no such
+    # action and that is fine. Fails open (None) on any model/parse error, then
+    # falls through to the deterministic tiers as a backstop only if explicitly
+    # left on. With llm_judge on and the regex tiers off (the default config),
+    # a clean PASS returns here and the keyword tiers never run.
+    if gates.get("llm_judge"):
+        verdict = llm_judge_verdict(text, ledger, session_classes, cwd, cfg)
+        if verdict:
+            return verdict
 
     push_claim = claim_match(text, PUSH_CLAIM_RE)
 
