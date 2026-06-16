@@ -335,6 +335,20 @@ def evaluate(final, tools, cwd, dd, sid, cfg, gates):
         return cache["r"]
 
     ledger = pg.read_ledger(dd, sid)
+
+    # Fold the durable ledger's recorded action kinds into session_classes.
+    # session_classes is built from the live transcript, which is truncated by
+    # context compaction — so a push/send/commit that ran in an EARLIER turn
+    # (then got compacted out) vanishes from the transcript and the claim reads
+    # as unverified, blocking a legitimate summary. The PostToolUse recorder
+    # (mark_dirty) persists those same kinds (push/send/git_commit/test_run) to
+    # the session ledger, which survives compaction. Trust it as evidence the
+    # action happened this session. (ledger kinds use the same class names.)
+    for _e in ledger:
+        _k = _e.get("kind")
+        if _k in ("push", "send", "git_commit", "test_run"):
+            session_classes.add(_k)
+
     push_claim = claim_match(text, PUSH_CLAIM_RE)
 
     # a. SHIP-STATE: claimed shipped, commit ran, but commits are unpushed.

@@ -154,6 +154,49 @@ def test_tests_pass_claim_with_run_after_edit_allows(tmp_path):
     assert out is None
 
 
+def test_sent_claim_verified_by_prior_turn_ledger_allows(tmp_path):
+    # Cross-turn / post-compaction: the send ran in an earlier turn (recorded
+    # to the durable ledger by mark_dirty), but the current transcript — after
+    # context compaction — no longer contains that tool_use. The claim must
+    # still clear off the ledger, not block a legitimate summary.
+    w = tmp_path / "w"
+    w.mkdir()
+    data = _data(tmp_path)
+    # Turn 1: a send-class command runs and is recorded to the ledger.
+    run_mark({
+        "session_id": "sess1", "cwd": str(w),
+        "hook_event_name": "PostToolUse", "tool_name": "Bash",
+        "tool_input": {"command": "gh pr comment 11577 --body hi"},
+        "tool_response": {},
+    }, data)
+    # Turn 2 (compacted): transcript holds only the summary claim, no tool_use.
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "I've posted the comment on the PR."),
+    ])
+    out = block_of(run_stop(stop_payload(tr, w), data))
+    assert out is None
+
+
+def test_pushed_claim_verified_by_prior_turn_ledger_allows(tmp_path):
+    # Same cross-turn story for the push class: a clean upstream isn't the only
+    # escape — a ledgered push from an earlier turn also clears the claim.
+    repo = make_repo(tmp_path, unpushed=1)  # upstream NOT clean, so only the
+    data = _data(tmp_path)                  # ledger can verify the claim.
+    run_mark({
+        "session_id": "sess1", "cwd": str(repo),
+        "hook_event_name": "PostToolUse", "tool_name": "Bash",
+        "tool_input": {"command": "git push origin HEAD"},
+        "tool_response": {},
+    }, data)
+    tr = make_transcript(tmp_path / "t2.jsonl", [
+        ("text", "Pushed the branch."),
+    ])
+    # checkable_claim's push branch keys on "push" in session_classes; the
+    # ledgered push now satisfies it regardless of upstream count.
+    out = block_of(run_stop(stop_payload(tr, repo), data))
+    assert out is None
+
+
 def test_unverified_escape_always_allows(tmp_path):
     w = tmp_path / "w"
     w.mkdir()

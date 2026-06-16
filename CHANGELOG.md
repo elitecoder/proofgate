@@ -40,6 +40,16 @@ All notable changes to proofgate are documented here. Format follows
   real subcommand surfaces. Repairs all three git rules at once; added regression
   tests for the `-c`/`-C`/`--git-dir`/`--work-tree` forms plus benign-subcommand
   controls.
+- **Stop gate blocked legitimate summaries after context compaction.** The
+  `checkable_claim` tier built its `session_classes` only from the live transcript,
+  which compaction truncates — so a `push` / `send` / `git_commit` that ran in an
+  earlier turn vanished, and a final summary restating it ("pushed", "posted",
+  "merged") read as unverified and was blocked. The PostToolUse recorder already
+  persists those kinds to the session ledger (which survives compaction), but the
+  Stop gate didn't consult it. Now folds the ledger's recorded kinds
+  (`push` / `send` / `git_commit` / `test_run`) into `session_classes`, so a
+  cross-turn action verifies the claim. Added regression tests for the
+  ledger-backed push and send cases.
 
 ## [0.1.0] - 2026-06-11
 
