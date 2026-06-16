@@ -29,6 +29,23 @@ All notable changes to proofgate are documented here. Format follows
 - Failure mode 7 (vacuous green) added to the field guide, with its honest
   residual stated: coverage proves a line ran, not that it ran un-mocked.
 
+### Changed
+
+- **The Stop gate now leads with an LLM judge instead of keyword tiers.** The
+  `checkable_claim` / `promissory` tiers matched bare words ("merged", "pushed",
+  "I'll next…") against mechanical state, which mis-fired on turns that took no
+  such action (most turns) and on legitimate cross-turn summaries. A new
+  `llm_judge` tier (default ON) sends the final summary **plus the session
+  evidence** (durable-ledger actions, command classes, git upstream state) to a
+  small model (`claude --bare -p --model haiku` by default, override via
+  `llm_judge_cmd`) and asks for a `PASS` / `BLOCK <reason>` verdict. It is told
+  most turns legitimately take no action and to default to PASS. `checkable_claim`
+  and `promissory` now default OFF (the judge subsumes them); the deterministic
+  `ship_state` / `red_green` / `deferral` ledger checks stay on. **Fails open** on
+  any model or parse error — a flaky judge never wedges the session. To run the
+  pure-deterministic gate with no model calls, set `llm_judge: false` and flip the
+  keyword tiers back on.
+
 ### Fixed
 
 - **Gatekeeper missed git subcommand rules under `git <global-opts> <subcommand>`.**

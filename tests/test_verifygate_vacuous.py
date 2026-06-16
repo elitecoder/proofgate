@@ -25,7 +25,10 @@ from test_verifygate_helpers import (
 sys.path.insert(0, str(ROOT / "scripts" / "verify-gate"))
 import pg_common as pg  # noqa: E402
 
-VAC_ON = {"gates": {"vacuous_test": True}}
+# vacuous_test ON, llm_judge OFF — these tests target the deterministic vacuous
+# tier in isolation; the default gate config now leads with the LLM judge, which
+# would shell to a real model and judge the text instead.
+VAC_ON = {"gates": {"vacuous_test": True, "llm_judge": False}}
 
 
 def _data(tmp_path, cfg=None):
@@ -57,13 +60,14 @@ INCIDENT = [
 # --- baseline-red: the gap is real ----------------------------------------
 
 def test_incident_allowed_when_tier_off_is_shipped_default(tmp_path):
-    """BASELINE-RED. With the tier in its shipped-default (off) state, the
-    real incident stops cleanly — exactly the gap that motivated mode 13."""
+    """BASELINE-RED. With the vacuous tier off (and the LLM judge off so no
+    model is called), the real incident stops cleanly — exactly the gap that
+    motivated mode 13."""
     w = tmp_path / "w"
     w.mkdir()
     tr = make_transcript(tmp_path / "t.jsonl", INCIDENT)
-    # No config file at all == DEFAULT_GATES (vacuous_test False).
-    assert block_of(run_stop(stop_payload(tr, w), _data(tmp_path))) is None
+    dd = _data(tmp_path, {"gates": {"vacuous_test": False, "llm_judge": False}})
+    assert block_of(run_stop(stop_payload(tr, w), dd)) is None
 
 
 def test_incident_blocked_when_tier_on(tmp_path):
@@ -277,7 +281,7 @@ def test_tier_off_explicitly_allows_incident(tmp_path):
     w = tmp_path / "w"
     w.mkdir()
     tr = make_transcript(tmp_path / "t.jsonl", INCIDENT)
-    dd = _data(tmp_path, {"gates": {"vacuous_test": False}})
+    dd = _data(tmp_path, {"gates": {"vacuous_test": False, "llm_judge": False}})
     assert block_of(run_stop(stop_payload(tr, w), dd)) is None
 
 

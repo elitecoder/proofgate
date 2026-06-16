@@ -8,8 +8,21 @@ from test_verifygate_helpers import (
 
 
 def _data(tmp_path):
+    # Seed a DETERMINISTIC-mode config: llm_judge OFF, the keyword tiers ON.
+    # The default gate config now leads with the LLM judge (which would shell
+    # out to a real model — neither hermetic nor what these tier tests target),
+    # so the deterministic-tier tests pin the gate into pure-deterministic mode.
+    # The llm_judge tier has its own tests that opt in with a stub command.
     d = tmp_path / "data"
     d.mkdir(exist_ok=True)
+    (d / "config.json").write_text(json.dumps({"gates": {
+        "llm_judge": False,
+        "checkable_claim": True,
+        "promissory": True,
+        "ship_state": True,
+        "red_green": True,
+        "deferral": True,
+    }}))
     return d
 
 
@@ -369,14 +382,75 @@ def test_loop_guard_allows_when_counter_untracked(tmp_path):
 
 def test_config_can_disable_a_tier(tmp_path):
     dd = _data(tmp_path)
+    # promissory ON would block this ending; disabling it (with llm_judge off so
+    # no model is called) must let it pass — proves the config overlay works.
     (dd / "config.json").write_text(json.dumps(
-        {"gates": {"promissory": False}}))
+        {"gates": {"llm_judge": False, "promissory": False}}))
     w = tmp_path / "w"
     w.mkdir()
     tr = make_transcript(tmp_path / "t.jsonl", [
         ("text", "Done with the refactor. I'll run the tests and report "
                  "back."),
     ])
+    out = block_of(run_stop(stop_payload(tr, w), dd))
+    assert out is None
+
+
+def test_promissory_on_blocks_when_explicitly_enabled(tmp_path):
+    dd = _data(tmp_path)  # _data seeds promissory: True, llm_judge: False
+    w = tmp_path / "w"
+    w.mkdir()
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "Done with the refactor. I'll run the tests and report "
+                 "back."),
+    ])
+    out = block_of(run_stop(stop_payload(tr, w), dd))
+    assert out is not None  # promissory tier fires
+
+
+# --- tier: llm_judge (stubbed model — hermetic) ----------------------------
+
+def _llm_data(tmp_path, judge_cmd):
+    # llm_judge ON, keyword tiers OFF, with a STUB command standing in for the
+    # model so the test never calls a real LLM.
+    d = tmp_path / "data"
+    d.mkdir(exist_ok=True)
+    (d / "config.json").write_text(json.dumps({
+        "llm_judge_cmd": judge_cmd,
+        "gates": {"llm_judge": True, "checkable_claim": False,
+                  "promissory": False, "ship_state": False,
+                  "red_green": False, "deferral": False},
+    }))
+    return d
+
+
+def test_llm_judge_block_verdict_blocks(tmp_path):
+    dd = _llm_data(tmp_path, "printf 'BLOCK no merge command ran this session'")
+    w = tmp_path / "w"
+    w.mkdir()
+    tr = make_transcript(tmp_path / "t.jsonl", [("text", "Merged the PR.")])
+    out = block_of(run_stop(stop_payload(tr, w), dd))
+    assert out is not None
+    assert "no merge command" in out["reason"]
+
+
+def test_llm_judge_pass_verdict_allows(tmp_path):
+    dd = _llm_data(tmp_path, "printf 'PASS'")
+    w = tmp_path / "w"
+    w.mkdir()
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "I reviewed the auth flow; the bug is in token refresh."),
+    ])
+    out = block_of(run_stop(stop_payload(tr, w), dd))
+    assert out is None
+
+
+def test_llm_judge_fails_open_on_model_error(tmp_path):
+    # A non-zero / empty model call must not wedge the session.
+    dd = _llm_data(tmp_path, "exit 3")
+    w = tmp_path / "w"
+    w.mkdir()
+    tr = make_transcript(tmp_path / "t.jsonl", [("text", "Merged the PR.")])
     out = block_of(run_stop(stop_payload(tr, w), dd))
     assert out is None
 
