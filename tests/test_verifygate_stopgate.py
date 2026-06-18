@@ -282,6 +282,59 @@ def test_red_green_cleared_by_ledgered_test_run(tmp_path):
     assert out is None
 
 
+def _write_ledger(dd, lines, sid="sess1"):
+    p = dd / "ledger" / ("%s.jsonl" % sid)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("".join(json.dumps(line) + "\n" for line in lines))
+
+
+def test_red_green_is_per_file_not_global_max(tmp_path):
+    # A coverage session edits test_a.py and proves it green, then much later
+    # edits test_b.py once more without re-running. The OLD global-max design
+    # took max(all test-edit ts) and re-flagged BOTH files; only test_b is
+    # genuinely unproven. The per-file evaluation must clear test_a and block
+    # only test_b. Ledger written directly for deterministic ts ordering.
+    dd = _data(tmp_path)
+    w = tmp_path / "w"
+    w.mkdir()
+    a = str(w / "tests" / "test_a.py")
+    b = str(w / "tests" / "test_b.py")
+    _write_ledger(dd, [
+        {"ts": 100.0, "kind": "edit", "path": a, "test": True},
+        {"ts": 110.0, "kind": "test_run", "ok": True, "cmd": "pytest test_a"},
+        {"ts": 200.0, "kind": "edit", "path": b, "test": True},
+    ])
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "Refactored both suites."),
+    ])
+    out = block_of(run_stop(stop_payload(tr, w), dd))
+    assert out is not None
+    assert b in out["reason"]
+    assert a not in out["reason"]  # proven green in an earlier turn — cleared
+
+
+def test_red_green_cross_turn_green_clears_later_untouched_files(tmp_path):
+    # The reported firefly false positive: every test file was edited and
+    # proven green across earlier turns; the final summary restates "tests
+    # pass". A green run that post-dates EVERY test edit clears all of them,
+    # even though the runs happened in compacted-away earlier turns.
+    dd = _data(tmp_path)
+    w = tmp_path / "w"
+    w.mkdir()
+    a = str(w / "tests" / "test_a.py")
+    b = str(w / "tests" / "test_b.py")
+    _write_ledger(dd, [
+        {"ts": 100.0, "kind": "edit", "path": a, "test": True},
+        {"ts": 150.0, "kind": "edit", "path": b, "test": True},
+        {"ts": 200.0, "kind": "test_run", "ok": True, "cmd": "pytest -q"},
+    ])
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "All suites green; done."),
+    ])
+    out = block_of(run_stop(stop_payload(tr, w), dd))
+    assert out is None
+
+
 # --- tier d: promissory ending ---------------------------------------------
 
 def test_promissory_ending_blocks(tmp_path):

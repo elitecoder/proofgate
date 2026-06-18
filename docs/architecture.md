@@ -31,7 +31,8 @@ Claude Code session
 │             tool_response} scripts/injectors/agent-file-lint.sh (Edit|Write)
 │                              exit 2 + stderr feedback on rationale prose
 │                            scripts/injectors/scope-budget.sh (Edit|Write)
-│                              {"decision":"block",...} at dirty-file thresholds
+│                              {"decision":"block",...} at configurable dirty-file
+│                              thresholds (PROOFGATE_SCOPE_BUDGET / config.json)
 │
 └── Stop ──────────────────▶ scripts/verify-gate/stop-gate.sh
       stdin: {transcript_path} extracts checkable claims from the final assistant
@@ -50,7 +51,7 @@ The data directory survives plugin updates. Layout:
 
 ```
 $CLAUDE_PLUGIN_DATA/
-├── config.json                       # Stop-gate tier toggles + notify-throttle settings
+├── config.json                       # Stop-gate tier toggles + notify-throttle + scope_budget settings
 ├── rules.local.tsv                   # user rule overlay (same id replaces a default)
 ├── tokens/
 │   └── <rule-id>.token               # pg-grant token: epoch timestamp, single use

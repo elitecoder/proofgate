@@ -89,9 +89,13 @@ def test_readme_required_content():
         assert needle in text, f"README missing {needle!r}"
     for heading in ["## Install", "## Roadmap", "## Is this for you", "## What's in the box"]:
         assert heading in text, f"README missing heading {heading!r}"
-    # off-by-default LLM judge must be stated
+    # the LLM judge leads the gate (default on); the keyword tiers it
+    # subsumes and the vacuous tier are off by default and must be disclosed.
     assert re.search(r"off by default", text, re.I)
-    assert '"llm_judge": false' in text
+    assert '"llm_judge": true' in text
+    assert '"vacuous_test": false' in text
+    # configurable scope budget must be documented
+    assert "PROOFGATE_SCOPE_BUDGET" in text
 
 
 def test_failure_modes_has_exactly_13():

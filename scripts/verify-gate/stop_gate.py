@@ -496,24 +496,36 @@ def evaluate(final, tools, cwd, dd, sid, cfg, gates):
                         "the test suite now and show the result, or restate "
                         "prefixed with UNVERIFIED:.")
 
-    # c. RED-GREEN ledger: test files edited, never proven green.
+    # c. RED-GREEN ledger: test files edited, never proven green. Evaluated
+    # PER FILE against the latest green proof in the durable ledger, NOT
+    # against a single global max-edit timestamp. The old global-max design
+    # re-flagged every test file the moment ONE of them got a late un-rerun
+    # edit: a 37-file coverage session that proved 36 files green across many
+    # turns, then touched one test file once more without re-running, had all
+    # 37 re-blocked — a cross-turn false positive (the same class commit #3
+    # fixed for the checkable_claim tier). A green run/receipt clears every
+    # test file edited at or before it; only files whose LAST edit post-dates
+    # the most recent green proof are genuinely unproven and block.
     if gates.get("red_green"):
-        test_edits = [e for e in ledger
-                      if e.get("kind") == "edit" and e.get("test")]
-        if test_edits:
-            last_ts = max(_f(e.get("ts")) for e in test_edits)
-            runs_after = [e for e in ledger
-                          if e.get("kind") == "test_run"
-                          and e.get("ok", True)
-                          and _f(e.get("ts")) >= last_ts]
-            recs_after = [r for r in receipts()
-                          if _f(r.get("ts")) >= last_ts]
-            if not runs_after and not recs_after:
-                paths = sorted({str(e.get("path") or "") for e in test_edits})
+        last_edit_ts = {}
+        for e in ledger:
+            if e.get("kind") == "edit" and e.get("test"):
+                p = str(e.get("path") or "")
+                ts = _f(e.get("ts"))
+                if p and ts >= last_edit_ts.get(p, -1.0):
+                    last_edit_ts[p] = ts
+        if last_edit_ts:
+            green_tss = [_f(e.get("ts")) for e in ledger
+                         if e.get("kind") == "test_run" and e.get("ok", True)]
+            green_tss += [_f(r.get("ts")) for r in receipts()]
+            latest_green = max(green_tss) if green_tss else -1.0
+            unproven = sorted(p for p, ts in last_edit_ts.items()
+                              if latest_green < ts)
+            if unproven:
                 return ("Test file(s) edited but never proven green: %s. "
                         "Run: %s \"tests pass after edits\" -- <test command>"
                         "\nOr restate prefixed with UNVERIFIED:."
-                        % (", ".join(paths[:3]), _prove_cmd()))
+                        % (", ".join(unproven[:3]), _prove_cmd()))
 
     # c2. VACUOUS-TEST: a STRONG claim ("validated end-to-end", "exercised the
     # real code path") after editing production code, but the only evidence is

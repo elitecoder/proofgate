@@ -6,6 +6,8 @@ All notable changes to proofgate are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-18
+
 ### Added
 
 - **verify-gate `vacuous_test` tier** (`Stop` hook, **off by default**): catches
@@ -45,8 +47,29 @@ All notable changes to proofgate are documented here. Format follows
   any model or parse error — a flaky judge never wedges the session. To run the
   pure-deterministic gate with no model calls, set `llm_judge: false` and flip the
   keyword tiers back on.
+- **scope-budget thresholds are now configurable and the default is raised.** The
+  hard-coded `(12, 30, 60)` first threshold fired on ordinary focused work — a
+  37-file coverage PR tripped it on nearly every edit. The default is now
+  `[50, 150]`, and the thresholds are settable via the `PROOFGATE_SCOPE_BUDGET`
+  env var (`"50,150"`, a single int, or `off`/`0` to disable) or a `scope_budget`
+  key in `config.json` (a list, a single int, `false`, or
+  `{"enabled": false}` / `{"thresholds": [...]}`). Env overrides config; bad
+  values fall through to the next source. The gate still fires once per threshold
+  per session and stays silent in non-git directories.
 
 ### Fixed
+
+- **Stop gate's `red_green` tier re-flagged files already proven green in earlier
+  turns.** The tier collapsed every test edit to a single global max-edit
+  timestamp, so a coverage session that proved 36 test files green across many
+  turns, then touched one more test file once without re-running it, had **all**
+  37 re-blocked as "never proven green" — the same cross-turn false-positive
+  class the `checkable_claim` fix addressed, on the one tier that still ran by
+  default after the LLM judge passes. It now evaluates **per file**: a green run
+  or `prove` receipt clears every test file edited at or before it, and only a
+  file whose last edit post-dates the most recent green proof blocks. Added
+  regression tests (per-file isolation + cross-turn green clearing) with a
+  mutation probe against the old global-max logic.
 
 - **Gatekeeper missed git subcommand rules under `git <global-opts> <subcommand>`.**
   `git`'s global options (`-c name=value`, `-C path`, `--git-dir=…`) sit between

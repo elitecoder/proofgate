@@ -40,7 +40,7 @@ Read this table as the full disclosure of what the plugin will do to your sessio
 | **pg-grant** | CLI | TTY-gated, time-boxed (15 min), single-use override tokens for `require-token` rules. Only a human at a real terminal can mint one — an agent cannot grant itself. |
 | **turn-context** | `UserPromptSubmit` hook | Injects a UTC timestamp plus a 4-line communication-register card into **every** prompt (~30 tokens — this is the one always-on injection). Direct-order prompts ("just do it", "stop asking" — 0.4% of corpus prompts) additionally get an authority card; pushback prompts (0.1%) get a re-verify-before-conceding card. |
 | **notify-throttle** | `PreToolUse` hook | Denies more than one notification command (`notify-send`, `terminal-notifier`, ... — configurable) per 5-minute window per session, with instructions to buffer and send one rollup. An `ACTION:` payload bypasses it. |
-| **scope-budget** | `PostToolUse` hook | When the repo crosses 12, 30, or 60 dirty/untracked files, blocks once per threshold and demands a one-line scope inventory before further edits. |
+| **scope-budget** | `PostToolUse` hook | When the repo crosses a dirty/untracked-file threshold (default 50, then 150), blocks once per threshold and demands a one-line scope inventory before further edits. Configurable via `PROOFGATE_SCOPE_BUDGET` or `config.json` (`"scope_budget"`); set to `off` to disable. |
 | **agent-file-lint** | `PostToolUse` hook | Edits to `CLAUDE.md`/`AGENTS.md`/`SKILL.md` that add rationale prose ("because", "rationale", ...) or >250-char lines are bounced back with line-level feedback — agent-facing files state WHAT, never WHY. |
 | **/codify** | skill | Turns the correction you just typed into a self-tested gatekeeper rule instead of a sermon that decays. |
 | **/defer** | skill | Logs "I'll do that later" items as durable artifacts (DEFERRALS.md + GitHub issue) so deferred work survives the session instead of evaporating. |
@@ -89,20 +89,22 @@ proofgate reads one optional config file, `config.json`, in the plugin's data di
 ```json
 {
   "gates": {
+    "llm_judge": true,
+    "checkable_claim": false,
+    "promissory": false,
     "ship_state": true,
-    "checkable_claim": true,
     "red_green": true,
-    "promissory": true,
     "deferral": true,
-    "vacuous_test": false,
-    "llm_judge": false
+    "vacuous_test": false
   },
+  "llm_judge_cmd": "claude --bare -p --model haiku",
   "notify_heads": ["notify-send", "terminal-notifier"],
-  "notify_window_seconds": 300
+  "notify_window_seconds": 300,
+  "scope_budget": [50, 150]
 }
 ```
 
-Each `gates` key toggles one Stop-gate check (see [architecture](docs/architecture.md) for what each one verifies). `vacuous_test` ships **off**: its trigger measures a 0% benign fire-rate (0 of 38 legitimate done-messages) but the signal is a claim/evidence-class mismatch, not proof of a mock (see [failure mode 7](docs/failure-modes.md)) — turn it on for sessions whose agents overclaim "end-to-end", leave it off otherwise. The gatekeeper is configured through its rules files, not `config.json`; the turn-context injector, scope-budget, and agent-file-lint have no config switches in this release — disabling them means uninstalling or removing their `hooks/hooks.json` entries from your checkout.
+Each `gates` key toggles one Stop-gate check (see [architecture](docs/architecture.md) for what each one verifies). The gate now **leads with an LLM judge** (`llm_judge`, default on): it reads the final summary together with the session evidence (durable-ledger actions, command classes, git upstream state) and blocks only an unsupported external-effect claim, instead of firing on a bare keyword. It **fails open** on any model/parse error. The two keyword tiers it subsumes — `checkable_claim` and `promissory` — default **off**; flip them on (and `llm_judge` off) to run the pure-deterministic gate with no model calls. Override the judge model with `llm_judge_cmd`. `vacuous_test` ships **off**: its trigger measures a 0% benign fire-rate but the signal is a claim/evidence-class mismatch, not proof of a mock (see [failure mode 7](docs/failure-modes.md)) — turn it on for sessions whose agents overclaim "end-to-end". `scope_budget` sets the dirty-file thresholds (default `[50, 150]`); `false` or `0` disables it, and the `PROOFGATE_SCOPE_BUDGET` env var overrides this key. The gatekeeper is configured through its rules files, not `config.json`; the turn-context and agent-file-lint injectors have no config switches in this release — disabling them means removing their `hooks/hooks.json` entries from your checkout.
 
 Add your own command rules in `$CLAUDE_PLUGIN_DATA/rules.local.tsv` — a single overlay file, never touched by updates. A row whose id matches a shipped default replaces it (a never-matching pattern like `(?!)` disables one). See the [rules.tsv schema](docs/architecture.md#rulestsv-schema) and the measure-before-enable workflow.
 
