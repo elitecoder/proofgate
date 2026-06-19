@@ -12,30 +12,6 @@ def data_dir():
     return fallback_data_dir()
 
 
-# --- kill switch ----------------------------------------------------------
-# A single authoritative "is proofgate off" signal every hook checks first.
-# Claude Code auto-enables a directory-source marketplace plugin when there is
-# no explicit enabledPlugins entry (marketplace defaultEnabled defaults true),
-# so a stale extraKnownMarketplaces registration can keep loading these hooks
-# even after the plugin looks uninstalled. The kill switch lets that stale
-# registration be silenced without editing the hooks: set PROOFGATE_DISABLED in
-# the environment, or drop an empty DISABLED file in the plugin data dir. The
-# uninstall contract (README) removes the registration entirely; this is the
-# defense-in-depth that guarantees a leftover one can never block again.
-DISABLE_SENTINEL = "DISABLED"
-
-
-def is_disabled(dd=None):
-    if os.environ.get("PROOFGATE_DISABLED"):
-        return True
-    if dd is None:
-        dd = os.environ.get("CLAUDE_PLUGIN_DATA")
-    try:
-        return bool(dd) and os.path.exists(os.path.join(dd, DISABLE_SENTINEL))
-    except Exception:
-        return False
-
-
 def fallback_data_dir():
     # bin/prove runs inside the agent's Bash tool where CLAUDE_PLUGIN_DATA
     # is usually unset, so both sides must agree on this fallback.

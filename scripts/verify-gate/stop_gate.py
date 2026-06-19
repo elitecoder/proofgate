@@ -632,8 +632,6 @@ def write_count(dd, sid, n):
 
 
 def main():
-    if pg.is_disabled():
-        return  # kill switch: hard no-op, never block a stop
     data = json.loads(sys.stdin.read())
     if not isinstance(data, dict):
         return

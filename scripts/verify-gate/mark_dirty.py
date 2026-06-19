@@ -14,8 +14,6 @@ RECORDED = {"git_commit", "push", "send", "test_run", "deferral_artifact"}
 
 
 def main():
-    if pg.is_disabled():
-        return  # kill switch: hard no-op, record nothing
     data = json.loads(sys.stdin.read())
     if not isinstance(data, dict):
         return

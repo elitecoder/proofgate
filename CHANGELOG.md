@@ -24,19 +24,6 @@ All notable changes to proofgate are documented here. Format follows
   `/plugin uninstall` alone is not enough for a directory-source install — you
   must also `/plugin marketplace remove proofgate`.
 
-### Added
-
-- **Kill switch (defense-in-depth).** Every hook entrypoint now hard-no-ops when
-  proofgate is disabled, so a stale registration can never block again even
-  before it is removed. Two equivalent off signals, checked at both the `sh`
-  wrapper and the Python layer: the `PROOFGATE_DISABLED` environment variable, or
-  a `DISABLED` sentinel file in the plugin data directory
-  (`$CLAUDE_PLUGIN_DATA/DISABLED`). `pg_common.is_disabled()` is the shared
-  helper; the standalone gatekeeper mirrors it inline. New
-  `tests/test_verifygate_disabled.py` proves each entrypoint (Stop gate,
-  mark-dirty recorder, gatekeeper) no-ops under both signals, with an
-  enabled-control per case that confirms the same scenario still fires.
-
 ## [0.2.0] - 2026-06-18
 
 ### Added
