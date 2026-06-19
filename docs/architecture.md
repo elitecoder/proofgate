@@ -45,6 +45,19 @@ Hooks are declared in `hooks/hooks.json` and reference scripts as
 `"${CLAUDE_PLUGIN_ROOT}"/scripts/...` with explicit timeouts. The manifest is
 `.claude-plugin/plugin.json`.
 
+### Enablement
+
+Claude Code loads a marketplace plugin's hooks when the plugin resolves to
+*enabled*. The resolution is: an explicit `enabledPlugins` entry wins
+(`true`/`false`); with no entry, the marketplace plugin's `defaultEnabled` field
+decides, and that field defaults to `true`. proofgate's marketplace manifest
+(`.claude-plugin/marketplace.json`) sets `"defaultEnabled": false`, so a bare
+directory- or GitHub-source registration does **not** auto-enable the plugin —
+enabling it is an explicit act (`"enabledPlugins": {"proofgate@proofgate": true}`).
+This is what makes uninstall stick: removing the plugin from `enabledPlugins`
+(and removing the marketplace registration) leaves nothing that resolves to
+enabled. See the README uninstall contract.
+
 ## State layout (`$CLAUDE_PLUGIN_DATA`)
 
 The data directory survives plugin updates. Layout:

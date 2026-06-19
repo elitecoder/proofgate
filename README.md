@@ -114,7 +114,12 @@ Every hook **fails open**: any internal error exits silently and the session pro
 
 ```
 /plugin uninstall proofgate@proofgate
+/plugin marketplace remove proofgate
 ```
+
+**Both steps are required for a directory-source install.** If you added proofgate from a local clone (`/plugin marketplace add ~/proofgate`), the marketplace registration alone is enough to keep the hooks loading: Claude Code auto-enables a registered marketplace plugin when there is no explicit `enabledPlugins` entry for it (a plugin's `defaultEnabled` defaults to `true`). proofgate ships `"defaultEnabled": false` in its marketplace manifest specifically so a bare directory registration no longer auto-enables — but a registration left over from before this release still resolves to enabled. Removing the marketplace (`/plugin marketplace remove proofgate`, which clears the `extraKnownMarketplaces` entry) is what actually stops the hooks. A GitHub install (`/plugin marketplace add elitecoder/proofgate`) behaves the same way.
+
+To keep proofgate registered but turned off, set `"enabledPlugins": {"proofgate@proofgate": false}` — an explicit `false` always wins over the marketplace default.
 
 Then delete the data directories if you want a clean slate. Hooks write under `$CLAUDE_PLUGIN_DATA`, but two documented fallbacks exist for state written outside hook context: `~/.claude/proofgate` (`pg-grant` tokens and local rules when `$CLAUDE_PLUGIN_DATA` is unset) and `~/.local/share/proofgate` (`prove` receipts — `prove` runs inside the agent's Bash tool, where `$CLAUDE_PLUGIN_DATA` is not exported). `/defer` output (DEFERRALS.md lines, GitHub issues) is work product in your repos, not plugin state, and is deliberately left in place.
 
