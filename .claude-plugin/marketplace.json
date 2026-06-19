@@ -9,7 +9,8 @@
       "name": "proofgate",
       "source": "./",
       "description": "Agents say done; proofgate asks for receipts. Stop-gate claim verification, head-parsed command gating with TTY-gated overrides, and measured prompt injectors for Claude Code.",
-      "version": "0.2.0",
+      "version": "0.2.1",
+      "defaultEnabled": false,
       "author": {
         "name": "Mukul Sharma"
       },

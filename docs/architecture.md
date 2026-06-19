@@ -45,12 +45,37 @@ Hooks are declared in `hooks/hooks.json` and reference scripts as
 `"${CLAUDE_PLUGIN_ROOT}"/scripts/...` with explicit timeouts. The manifest is
 `.claude-plugin/plugin.json`.
 
+### Enablement and the kill switch
+
+Claude Code loads a marketplace plugin's hooks when the plugin resolves to
+*enabled*. The resolution is: an explicit `enabledPlugins` entry wins
+(`true`/`false`); with no entry, the marketplace plugin's `defaultEnabled` field
+decides, and that field defaults to `true`. proofgate's marketplace manifest
+(`.claude-plugin/marketplace.json`) sets `"defaultEnabled": false`, so a bare
+directory- or GitHub-source registration does **not** auto-enable the plugin —
+enabling it is an explicit act. This is what makes uninstall stick: removing the
+plugin from `enabledPlugins` (and removing the marketplace registration) leaves
+nothing that resolves to enabled. See the README uninstall contract.
+
+As defense-in-depth, every hook entrypoint hard-no-ops when proofgate is
+disabled, regardless of how it got loaded. The off signal is checked at both the
+`sh` wrapper (first line, before `python3` is even invoked) and the Python layer
+(`pg_common.is_disabled()`; the standalone gatekeeper mirrors it inline):
+
+- `PROOFGATE_DISABLED` set to any non-empty value in the hook environment, or
+- a `DISABLED` file in `$CLAUDE_PLUGIN_DATA`.
+
+Either makes the entrypoint exit 0 with no output and no state writes — no
+blocks, asks, or ledger entries. A stale registration therefore can never wedge
+a session.
+
 ## State layout (`$CLAUDE_PLUGIN_DATA`)
 
 The data directory survives plugin updates. Layout:
 
 ```
 $CLAUDE_PLUGIN_DATA/
+├── DISABLED                          # optional kill switch: if present, every hook hard-no-ops
 ├── config.json                       # Stop-gate tier toggles + notify-throttle + scope_budget settings
 ├── rules.local.tsv                   # user rule overlay (same id replaces a default)
 ├── tokens/

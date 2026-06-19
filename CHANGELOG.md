@@ -6,6 +6,37 @@ All notable changes to proofgate are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-19
+
+### Fixed
+
+- **Uninstalling proofgate did not stop its hooks.** A directory-source
+  marketplace registration (`/plugin marketplace add <local-path>`, recorded in
+  `extraKnownMarketplaces` + `known_marketplaces.json`) keeps Claude Code loading
+  this plugin's `hooks/hooks.json` even with **no** `enabledPlugins` entry,
+  because a marketplace plugin's `defaultEnabled` defaults to **true** — "starts
+  enabled when the user has no explicit enabled/disabled setting." So a plugin
+  that looked uninstalled (absent from `enabledPlugins`, cache orphaned) still
+  fired its `Stop`/`PreToolUse`/`PostToolUse` hooks straight from the registered
+  directory. The marketplace manifest now sets `"defaultEnabled": false`, so a
+  bare directory registration no longer auto-enables the plugin; it must be
+  enabled explicitly. The **uninstall contract** is now documented (README):
+  `/plugin uninstall` alone is not enough for a directory-source install — you
+  must also `/plugin marketplace remove proofgate`.
+
+### Added
+
+- **Kill switch (defense-in-depth).** Every hook entrypoint now hard-no-ops when
+  proofgate is disabled, so a stale registration can never block again even
+  before it is removed. Two equivalent off signals, checked at both the `sh`
+  wrapper and the Python layer: the `PROOFGATE_DISABLED` environment variable, or
+  a `DISABLED` sentinel file in the plugin data directory
+  (`$CLAUDE_PLUGIN_DATA/DISABLED`). `pg_common.is_disabled()` is the shared
+  helper; the standalone gatekeeper mirrors it inline. New
+  `tests/test_verifygate_disabled.py` proves each entrypoint (Stop gate,
+  mark-dirty recorder, gatekeeper) no-ops under both signals, with an
+  enabled-control per case that confirms the same scenario still fires.
+
 ## [0.2.0] - 2026-06-18
 
 ### Added

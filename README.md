@@ -114,9 +114,21 @@ Every hook **fails open**: any internal error exits silently and the session pro
 
 ```
 /plugin uninstall proofgate@proofgate
+/plugin marketplace remove proofgate
 ```
 
+**Both steps are required for a directory-source install.** If you added proofgate from a local clone (`/plugin marketplace add ~/proofgate`), the marketplace registration alone is enough to keep the hooks loading: Claude Code auto-enables a registered marketplace plugin when there is no explicit `enabledPlugins` entry for it (a plugin's `defaultEnabled` defaults to `true`). proofgate ships `"defaultEnabled": false` in its marketplace manifest specifically so a bare directory registration no longer auto-enables — but a registration left over from before this release still resolves to enabled. Removing the marketplace (`/plugin marketplace remove proofgate`, which clears the `extraKnownMarketplaces` entry) is what actually stops the hooks. A GitHub install (`/plugin marketplace add elitecoder/proofgate`) behaves the same way.
+
 Then delete the data directories if you want a clean slate. Hooks write under `$CLAUDE_PLUGIN_DATA`, but two documented fallbacks exist for state written outside hook context: `~/.claude/proofgate` (`pg-grant` tokens and local rules when `$CLAUDE_PLUGIN_DATA` is unset) and `~/.local/share/proofgate` (`prove` receipts — `prove` runs inside the agent's Bash tool, where `$CLAUDE_PLUGIN_DATA` is not exported). `/defer` output (DEFERRALS.md lines, GitHub issues) is work product in your repos, not plugin state, and is deliberately left in place.
+
+#### Kill switch — turn every hook off without uninstalling
+
+If you want proofgate registered but completely inert (or you need to silence a leftover registration immediately), every hook hard-no-ops on either of two signals:
+
+- the **`PROOFGATE_DISABLED`** environment variable set to any non-empty value, or
+- a **`DISABLED`** file in the plugin data directory: `touch "$CLAUDE_PLUGIN_DATA/DISABLED"`.
+
+Either one makes the `Stop` gate, the gatekeeper, the ledger recorder, and the injectors exit silently before doing any work — no blocks, no asks, no ledger writes. This is defense-in-depth: it guarantees that even a stale or misconfigured registration can never wedge a session. Remove the env var or delete the file to re-enable.
 
 ## Is this for you?
 

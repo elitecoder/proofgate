@@ -671,7 +671,23 @@ def _data_dir():
         os.path.expanduser("~"), ".claude", "proofgate")
 
 
+def _is_disabled():
+    # Kill switch (mirrors pg_common.is_disabled; this script does not import
+    # it). A stale directory-source registration can keep loading this gate
+    # after the plugin looks uninstalled; PROOFGATE_DISABLED or a DISABLED
+    # sentinel in the data dir hard-no-ops it without editing the hooks.
+    if os.environ.get("PROOFGATE_DISABLED"):
+        return True
+    dd = os.environ.get("CLAUDE_PLUGIN_DATA")
+    try:
+        return bool(dd) and os.path.exists(os.path.join(dd, "DISABLED"))
+    except Exception:
+        return False
+
+
 def main():
+    if _is_disabled():
+        return  # kill switch: hard no-op, never deny/ask
     payload = json.loads(sys.stdin.read() or "{}")
     if not isinstance(payload, dict):
         return
