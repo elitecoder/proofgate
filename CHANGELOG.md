@@ -6,6 +6,31 @@ All notable changes to proofgate are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-19
+
+### Changed
+
+- **The Stop gate is now a single LLM judge that reads the session transcript —
+  the mechanical claim tiers are gone.** The previous gate classified evidence
+  into a lossy ledger (command *heads* → kinds like `test_run`) and the judge
+  reasoned over that digest, never the real output. So an honest "specs green"
+  backed by `4 passed (48.6s)` in a Playwright run's output was blocked because
+  no `test_run` head was recorded — the judge was never shown the output the
+  gate had already parsed. The gate now renders the turn's tool calls **and
+  their real outputs** (plus the final summary) and hands that transcript to the
+  model, which decides whether the summary's external-effect claims (pushed/
+  merged, sent/posted, tests-pass, deployed) are supported by what actually
+  happened. Reporting a fact verified via `gh` passes; a bare unsupported
+  "merged" blocks. The durable ledger is passed only as a backstop for a
+  transcript truncated by compaction. **Removed** the `checkable_claim`,
+  `promissory`, `ship_state`, `red_green`, and `vacuous_test` tiers and all
+  their regexes/git/receipt plumbing; `config.json` now has a single gate switch
+  (`gates.llm_judge`, default on; set false to disable). Still fails open on any
+  model/parse error, caps at 2 blocks/turn, and honours `UNVERIFIED:`.
+  `bin/prove` / `bin/prove-cov` and the session ledger remain (skill-facing and
+  as the compaction backstop), but the gate no longer consumes receipts
+  mechanically.
+
 ## [0.2.1] - 2026-06-19
 
 ### Fixed

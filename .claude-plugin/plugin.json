@@ -1,7 +1,7 @@
 {
   "name": "proofgate",
-  "version": "0.2.1",
-  "description": "Agents say done; proofgate asks for receipts. A Stop gate that cross-references claims against mechanically checkable state, a head-parsing command gatekeeper, and prompt-pattern context injectors - all tuned on a 93,931-command real-usage corpus, all fail-open.",
+  "version": "0.3.0",
+  "description": "Agents say done; proofgate asks for receipts. A Stop gate where an LLM reads the session transcript (tool calls and their real outputs) and blocks unsupported external-effect claims, a head-parsing command gatekeeper, and prompt-pattern context injectors - all fail-open.",
   "author": {
     "name": "Mukul Sharma"
   },

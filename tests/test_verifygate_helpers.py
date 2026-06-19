@@ -69,8 +69,13 @@ def stop_payload(transcript_path, cwd, sid="sess1", active=False):
 
 
 def make_transcript(path, items):
-    """items: ("text", str) | ("bash", cmd[, ok]) | ("edit", path[, ok])
-    | ("write", path[, ok])"""
+    """items:
+        ("text", str)
+        ("bash", cmd[, ok[, output]])
+        ("edit", path[, ok[, output]])
+        ("write", path[, ok[, output]])
+    The optional 4th element is the tool_result output text the gate's LLM
+    reads (e.g. a test runner's "4 passed (48.6s)"); defaults to "ok"."""
     lines = []
     tid = 0
     for it in items:
@@ -83,6 +88,7 @@ def make_transcript(path, items):
         tid += 1
         tuid = "toolu_%d" % tid
         ok = it[2] if len(it) > 2 else True
+        output = it[3] if len(it) > 3 else "ok"
         if kind == "bash":
             tu = {"type": "tool_use", "id": tuid, "name": "Bash",
                   "input": {"command": it[1]}}
@@ -98,7 +104,7 @@ def make_transcript(path, items):
         lines.append({"type": "user", "message": {
             "role": "user",
             "content": [{"type": "tool_result", "tool_use_id": tuid,
-                         "content": "ok", "is_error": not ok}]}})
+                         "content": output, "is_error": not ok}]}})
     Path(path).write_text(
         "\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
     return Path(path)

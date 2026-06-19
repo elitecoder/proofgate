@@ -2,8 +2,8 @@
 # prove-cov "<claim>" <covered-file>... -- <command...>
 #
 # Like `prove`, but records WHICH files the command actually executed lines
-# in, so the Stop gate's vacuous_test tier can tell a real-path run from a
-# mocked unit pass. Runs <command> under coverage.py, requires exit 0 AND
+# in, so a real-path run can be told apart from a mocked unit pass. Runs
+# <command> under coverage.py, requires exit 0 AND
 # non-empty output, then verifies each named <covered-file> shows >0 executed
 # lines in the coverage data. Writes a receipt with a "covered" list of the
 # REAL paths coverage measured (not the names you passed).

@@ -205,7 +205,7 @@ def _is_test_runner(head, sub, sub2, rest):
 
 # Sub-commands/flags that mean "don't actually run the suite" — a no-op token
 # like `playwright --version`, `cypress info`, or `playwright test --list` must
-# not count as a real run (it would trivially clear the vacuous_test claim).
+# not count as a real run when classifying a command for the ledger digest.
 _E2E_NOOP = {"--version", "-v", "version", "--help", "-h", "help", "info",
              "install", "--list", "list", "codegen", "open", "--init", "init",
              "--dry-run", "show-report", "merge-reports"}
