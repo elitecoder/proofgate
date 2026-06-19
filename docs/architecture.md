@@ -35,10 +35,12 @@ Claude Code session
 │                              thresholds (PROOFGATE_SCOPE_BUDGET / config.json)
 │
 └── Stop ──────────────────▶ scripts/verify-gate/stop-gate.sh
-      stdin: {transcript_path} extracts checkable claims from the final assistant
-                               message, cross-references the session ledger,
-                               prove receipts, and live git state
-                               stdout on mismatch: {"decision":"block","reason":"..."}
+      stdin: {transcript_path} renders the turn's tool calls + their real outputs
+                               and the final summary, and asks an LLM whether the
+                               summary's external-effect claims are supported by
+                               that transcript (durable ledger passed as a
+                               compaction backstop only)
+                               stdout on block: {"decision":"block","reason":"..."}
 ```
 
 Hooks are declared in `hooks/hooks.json` and reference scripts as
@@ -64,7 +66,7 @@ The data directory survives plugin updates. Layout:
 
 ```
 $CLAUDE_PLUGIN_DATA/
-├── config.json                       # Stop-gate tier toggles + notify-throttle + scope_budget settings
+├── config.json                       # Stop-gate on/off (gates.llm_judge) + llm_judge_cmd + notify-throttle + scope_budget
 ├── rules.local.tsv                   # user rule overlay (same id replaces a default)
 ├── tokens/
 │   └── <rule-id>.token               # pg-grant token: epoch timestamp, single use
@@ -102,28 +104,17 @@ the parsed command head plus the tool result's error status — never from
 assistant prose. `test` on edit records marks test-file paths so the Stop gate
 knows which edits demand a post-edit green.
 
-What the Stop gate enforces from the ledger:
+How the ledger feeds the Stop gate:
 
-- A tests-pass claim requires a successful test run after the last file edit
-  (by tool order in the transcript, falling back to ledger timestamps and
-  `prove` receipts).
-- An edited test file blocks the stop until a green test run or `prove`
-  receipt is recorded after the edit. The ledger records reds too, but
-  red-*first* discipline is `/repro-test` skill prose in this release, not a
-  hook guarantee.
-- (`vacuous_test` tier, off by default) A *strong* end-to-end claim
-  ("validated end-to-end", "exercised the real code path") made after editing
-  a production (non-test) file must be backed by real-path evidence: an
-  `e2e_run`-class command (`playwright`, `cypress`) that ran *after* the edit,
-  or a `prove-cov` receipt whose `covered` paths include an edited production
-  file (matched by path-suffix, not bare basename). A unit runner alone does
-  not clear it, an informational no-op (`playwright --version`, `--list`) is
-  not an `e2e_run`, and a send-class command is not accepted (a `curl` proves
-  a request, not that the edited code made it). The trigger is a precision
-  tripwire on validation-verb phrasing (not the noun phrase "an end-to-end
-  test"); measured benign fire-rate 0% on a 53-line corpus, recall low by
-  design (see failure mode 7). The honest limit: coverage proves a line ran,
-  not that it ran un-mocked.
+The Stop gate does **not** enforce tier logic against the ledger. It reads the
+session transcript directly — each tool call and its real output — and an LLM
+judges whether the final summary's external-effect claims are supported by what
+the transcript shows (e.g. a test command whose output contains `4 passed`
+supports a "tests pass" claim). The ledger's recorded action kinds (`push`,
+`send`, `git_commit`, `test_run`) are passed to the judge only as a **backstop**
+for a transcript truncated by context compaction — an action that ran in an
+earlier, compacted-out turn still shows up as a recorded kind. The ledger is
+never a verdict on its own; the transcript output is the evidence.
 
 ### Prove receipts (`ledger/receipts/<cwd-hash>.jsonl`)
 
@@ -136,16 +127,18 @@ non-empty output before recording:
 
 `bin/prove-cov "<claim>" <file>... -- <command...>` writes the same shape plus
 a `covered` list — the named files coverage.py measured as executing >0 lines
-under the command. The `vacuous_test` tier reads `covered` to confirm an
-edited production file actually ran; a plain `prove` receipt (no `covered`
-key) is exit-0 evidence only and does not clear that tier:
+under the command:
 
 ```json
 {"claim":"end-to-end","cmd":"-m pytest e2e/","exit":0,"sha":"a1b2c3...","cwd":"/home/user/my-app","ts":1765500799.4,"covered":["src/mutation_probe.py"]}
 ```
 
-Honest limit: `covered` proves a line executed, not that it executed against
-an un-mocked collaborator (a mock behind a covered line is invisible here).
+The Stop gate no longer consumes these receipts mechanically — they are
+skill-facing (`/repro-test`) records of a proven run. Their value to the gate
+is indirect: running `prove`/`prove-cov` puts its output in the transcript the
+judge reads. Honest limit: `covered` proves a line executed, not that it
+executed against an un-mocked collaborator (a mock behind a covered line is
+invisible here).
 
 ### Grant tokens (`tokens/<rule-id>.token`)
 

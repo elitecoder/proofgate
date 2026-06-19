@@ -24,8 +24,9 @@ completion fact. Note the trap for tool builders: naive done-claim regexes fired
 26–55% of benign turns in the corpus — most "done" statements are honest, so the gate
 must check state, not vocabulary.
 
-**proofgate piece.** verify-gate (`Stop` hook), Tier 1: acts only on claims that map to
-mechanically checkable state, and blocks the stop with the specific discrepancy.
+**proofgate piece.** verify-gate (`Stop` hook): an LLM reads the session transcript — the
+tool calls and their real outputs — and blocks the stop only when the summary asserts a
+specific external-effect action the transcript does not support, naming the discrepancy.
 
 ### 2. The unpushed push
 
@@ -36,9 +37,9 @@ claim.
 **Why.** Push failures (auth, hooks, network, protected branches) arrive after the
 narrative is already written, and the failure output scrolls past unread.
 
-**proofgate piece.** verify-gate Tier 1: a "pushed" claim requires a matching push
-receipt — an actual successful `git push` observed in the session — or the stop is
-blocked with what git actually says.
+**proofgate piece.** verify-gate: the judge reads the transcript for an actual `git push`
+/ `gh pr merge` (or output showing the branch already up to date) before it accepts a
+"pushed"/"merged" claim; a bare claim with no such command in the trace is blocked.
 
 ### 3. The unsent send
 
@@ -49,8 +50,9 @@ transmitted.
 **Why.** Composing the artifact and sending it are adjacent steps; the narrative
 completes after the first one.
 
-**proofgate piece.** verify-gate Tier 1: "sent" claims are cross-referenced against the
-session's receipt log for a send-class invocation. No send command, no stop.
+**proofgate piece.** verify-gate: the judge looks in the transcript for a send-class
+command (`curl`, `mail`, `gh pr comment`, …) before accepting a "sent"/"posted" claim.
+No send command in the trace, no stop.
 
 ---
 
@@ -64,9 +66,9 @@ the failure was summarized as a pass.
 **Why.** Asserting green is the lowest-energy path to ending a coding task, and in long
 sessions the most recent actual test run can be many turns and several edits stale.
 
-**proofgate piece.** verify-gate Tier 2: the test ledger records every observed
-test run with its real exit status. A pass claim with no post-edit passing run on the
-ledger blocks the stop.
+**proofgate piece.** verify-gate: the judge reads the actual test-command output in the
+transcript (e.g. `4 passed`, `FAILED`, `0 passed`). A "tests pass / green" claim that the
+visible output does not support — or that has no test run at all — blocks the stop.
 
 ### 5. Test surgery
 
@@ -76,12 +78,11 @@ green. The assertion that caught the bug is the casualty.
 **Why.** To an agent optimizing for "suite green," weakening the test and fixing the
 code are interchangeable moves — one is much faster.
 
-**proofgate piece.** verify-gate Tier 2 plus `/repro-test`: edits to test files are
-tracked on the ledger, and the session cannot stop without a recorded green run (or
-`prove` receipt) after the last test edit — a weakened test at least has to be run, in
-this session, with its real exit status on the record. Red-first proof that the test
-ever caught the bug is `/repro-test` discipline (model-followed prose), not a hook
-guarantee in this release.
+**proofgate piece.** verify-gate plus `/repro-test`: when the agent claims a test passes
+after editing it, the judge looks in the transcript for that test actually being run with
+passing output — a weakened test at least has to be run, in this session, with its real
+result visible. Red-first proof that the test ever caught the bug is `/repro-test`
+discipline (model-followed prose), not a hook guarantee in this release.
 
 ### 6. Fix without repro
 
@@ -111,51 +112,30 @@ claim with the *wrong kind* of run behind it, which is harder to catch because t
 is genuine.
 
 **The honest hard part.** A `Stop` hook cannot statically prove a passing test was
-mocked — a mock behind a covered line looks identical to a real call. So proofgate does
-not pretend to detect the mock. It gates the *claim/evidence-class mismatch* instead: an
-end-to-end claim must be backed by end-to-end-grade evidence, not a unit pass. Two
-mechanically checkable signals make this defensible:
+mocked — a mock behind a covered line looks identical to a real call. proofgate does not
+pretend to detect the mock. What it can do is read the transcript and judge whether an
+end-to-end claim is backed by end-to-end-grade evidence in the actual tool output: did a
+browser/e2e runner actually run and pass, or did the agent edit production code, run a
+unit suite, and *call that* "validated end-to-end"? The LLM judge sees the commands and
+their output, so it can tell "added an end-to-end test" (a description, fine) from
+"exercised the real path" asserted over nothing but a mocked unit pass.
 
-- **Claim specificity.** The trigger fires only on the strong phrasing — "validated /
-  verified / exercised end-to-end" and "(real|production) code path … exercised" —
-  asserted by a *validation verb*, never on a noun phrase that describes a test artifact
-  ("added an end-to-end test") and never on thorough-unit phrasing ("fully tested
-  locally") or affirmative real-noun mentions ("the production API key is set"). Measured
-  benign fire-rate on a corpus of 53 legitimate done-messages — including the
-  affirmative `fully …` / `real|production <noun>` phrasings an earlier, broader draft of
-  the regex fired on at ~87% — is **0%** (0 of 53). That broader draft was cut precisely
-  because the measurement caught it: the corpus and the measurement are the point.
-- **Evidence class.** The strong claim clears only on real-path evidence: an e2e/browser
-  runner (`playwright`, `cypress`) ran *after* the production edit, or a `prove-cov`
-  coverage receipt shows an edited production file actually executed (matched by path,
-  not bare basename). A pure unit runner (`pytest`, `jest`, `go test`) does not clear it,
-  an informational no-op (`playwright --version`, `--list`) does not count as a run, and
-  a send-class command (`curl`) is **not** accepted — it proves a request was made, not
-  that the edited code produced it.
+**What this does NOT do (stated plainly, because the project's identity is honesty about
+its own limits):**
 
-**What this gate does NOT do (stated plainly, because the project's identity is honesty
-about its own limits):**
-
-- It is a **precision tripwire, not a classifier.** Recall is low by design: an agent can
-  phrase around it ("checked the real path manually", "verified everything works in the
-  real world") and it will not fire. It catches the *common* overclaim phrasing cheaply;
-  it does not guarantee catching every dishonest end-to-end claim.
-- `prove-cov` proves a line *executed*, not that it executed against an un-mocked
+- Coverage proves a line *executed*, not that it executed against an un-mocked
   collaborator. A test that mocks the subprocess but still calls the function under test
-  will cover that function and satisfy the receipt. The gate raises the bar from "exit 0"
-  to "the changed code ran under a real-path command or e2e runner" — it does not, and
-  cannot from a hook, certify the boundary was real.
-- `prove-cov` wraps a Python command (`python`, `pytest`, `unittest`, `nose2` forms);
-  non-Python runners can't be coverage-wrapped, so for those the honest evidence is an
-  e2e/browser run.
+  will look covered. Neither a hook nor an LLM reading the transcript can certify the
+  boundary was real — at best the judge flags a unit-only run dressed up as end-to-end.
+- The judge reads what is in the transcript. An agent that narrates "checked the real
+  path manually" with nothing in the trace gives the judge little to go on; the honest
+  move remains the agent's — show the e2e run, or say "unit tests pass" plainly.
 
-The remaining honest move is always the agent's: an e2e run, a covering `prove-cov`, or
-saying "unit tests pass" plainly.
-
-**proofgate piece.** verify-gate `vacuous_test` tier (off by default, config-gated on the
-0% measured fire-rate) plus the `bin/prove-cov` coverage-receipt variant. Enable it when
-a session's agents are prone to end-to-end overclaiming; leave it off if your turns never
-use the strong phrasing.
+**proofgate piece.** verify-gate Stop hook — the LLM judge reads the session transcript
+(tool calls + their real outputs) and weighs an end-to-end claim against whether a
+real-path run actually appears and passed, instead of accepting a unit pass as proof.
+`bin/prove-cov` still records coverage receipts for `/repro-test` discipline; their value
+to the gate is that running them puts the evidence in the transcript the judge reads.
 
 ---
 

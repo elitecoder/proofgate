@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""proofgate Stop gate: deterministic claim/state cross-checks.
+"""proofgate Stop gate: an LLM reads the session transcript and judges it.
 
-Only checkable claims are acted on; every tier maps a claim class to
-mechanically verifiable evidence. Fails open on any error.
+The gate renders what actually happened this turn — the agent's tool calls
+AND their real outputs (test runs, git commands, edits), plus the final
+summary — and asks an LLM whether the summary's external-effect claims are
+supported by that evidence. There are no mechanical claim tiers: the model
+reads the transcript and the output (e.g. "4 passed (48.6s)"), instead of a
+gate cross-referencing a lossy classified ledger.
+
+Fails open on any error: a flaky/missing model, a malformed transcript, or a
+parse failure all return PASS so the gate never wedges a session.
 """
 import json
 import os
-import re
 import subprocess
 import sys
 
@@ -14,111 +20,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pg_common as pg
 
 MAX_BLOCKS_PER_TURN = 2
-EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+DEFAULT_JUDGE_CMD = "claude --bare -p --model haiku"
 
-# The LLM judge subsumes the two claim-vs-text keyword tiers (checkable_claim,
-# promissory): it reads the summary against the session evidence and judges
-# whether an action-claim is unsupported, instead of firing on a bare keyword.
-# So those two default OFF when llm_judge is on. The remaining tiers are cheap
-# deterministic ledger checks the judge does not replace, and stay on. If the
-# LLM call fails it fails open (no block); set llm_judge False + the keyword
-# tiers True to fall back to the pure-deterministic gate.
-DEFAULT_GATES = {
-    "llm_judge": True,
-    "checkable_claim": False,
-    "promissory": False,
-    "ship_state": True,
-    "red_green": True,
-    "deferral": True,
-    "vacuous_test": False,
-}
-
-PUSH_CLAIM_RE = re.compile(r"\b(pushed|merged|shipped)\b", re.I)
-SEND_CLAIM_RE = re.compile(r"\b(sent|delivered|posted)\b", re.I)
-TESTS_CLAIM_RE = re.compile(
-    r"\b(?:all\s+)?(?:unit\s+|e2e\s+|integration\s+)?tests?\s+"
-    r"(?:are\s+|all\s+|now\s+|still\s+)*(?:pass(?:ing|ed|es)?|green)\b"
-    r"|\btest\s+suite\s+(?:passes|passed|is\s+green)\b"
-    r"|\be2e\s+pass(?:ed|es|ing)?\b",
-    re.I)
-
-# A STRONGER claim than "tests pass": an explicit assertion that the real code
-# path was exercised end-to-end. This is a PRECISION-tuned tripwire for the
-# common overclaim phrasing, NOT an airtight classifier — it is deliberately
-# easy to phrase around (recall is low by design; see failure mode 7). It must
-# fire on the VALIDATION-VERB claim ("validated end-to-end", "exercised the
-# real code path"), never on a noun phrase that describes a test artifact
-# ("added an end-to-end test") or on thorough-unit phrasing ("fully tested
-# locally") — those are benign and would make this a noisy regex.
-#
-# Two earlier-drafted branches were CUT after adversarial measurement on an
-# affirmative benign corpus: a bare "fully <verb>" branch (fired on the common
-# honest "fully tested locally") and a broad "real/production <noun>" branch
-# with nouns like server/api/endpoint (fired on "the production API key",
-# "restarted the real server"). The trigger now anchors on the canonical
-# strong phrases only: "<verb> ... end-to-end" and "(real|actual|production|
-# live) (code) path/pipeline ... <exercise verb>". Negation is stripped by the
-# shared NEG_TAIL_RE; active future by STRONG_FUTURE_RE. Measured benign
-# fire-rate is in the PR and pinned by test_verifygate_vacuous_fprate.py.
-_RPATH = r"(?:real|actual|production|live)\s+(?:code[\s-]?)?(?:path|paths|pipeline)"
-STRONG_CLAIM_RE = re.compile(
-    # verb-of-validation + (optional short object) + "end-to-end"
-    r"\b(?:validat|verif|exercis|confirm|tested)\w*\s+"
-    r"(?:it\s+|this\s+|that\s+|the\s+(?:\w+\s+){0,2}|everything\s+|fully\s+)?"
-    r"end[\s-]?to[\s-]?end\b"
-    # exercise-verb + "the real/production code path/pipeline"
-    r"|\b(?:exercis\w*|cover\w*|hit|ran|run|tested|validat\w*|verif\w*)\s+"
-    r"(?:against\s+)?(?:the\s+|a\s+)?" + _RPATH + r"\b"
-    # "the real code path is/was exercised/covered/tested/run"
-    r"|\b(?:the\s+)?" + _RPATH + r"\s+"
-    r"(?:is|was|are|were|now)\s+(?:fully\s+|now\s+)?"
-    r"(?:exercis\w*|cover\w*|tested|run|hit|validat\w*|verif\w*)",
-    re.I)
-
-# The strong claim's verbs share a stem across tenses (validat\w* matches both
-# "validated" and "validate"), so active future ("I will validate ...", "going
-# to verify ...") leaks past the shared NEG_TAIL_RE, which only knows the
-# passive form ("will be validated"). Broadening the shared guard would
-# re-tune the push/send/tests gates; instead suppress active future locally,
-# just for this trigger.
-STRONG_FUTURE_RE = re.compile(
-    r"(?:\bI'?ll|\bwe'?ll|\bwill|\bgoing\s+to|\bplan(?:ning|s)?\s+(?:to|on)"
-    r"|\bintend(?:ing|s)?\s+to|\bneed\s+to|\bwant\s+to)"
-    r"\s*(?:\w+[\s,]+){0,2}$",
-    re.I)
-
-# A claim preceded by negation/futurity is not a claim.
-NEG_TAIL_RE = re.compile(
-    r"(?:\bnot|\bnever|n't|\bwithout|\bbefore|\buntil|\bunless|\bonce"
-    r"|\bafter|\bto\s+be|\bwill\s+be|\bwould\s+be|\bcan\s+be|\bshould\s+be"
-    r"|\bmust\s+be|\bneeds?\s+to\s+be|\byet\s+to\s+be|\bready\s+to"
-    r"|\babout\s+to|\bgoing\s+to|\bstill\s+to)"
-    r"\s*(?:\w+[\s,]+){0,2}$",
-    re.I)
-
-PROMISSORY_RE = re.compile(
-    r"\b(?:I'll|I\s+will|Let\s+me|I'm\s+going\s+to|I\s+am\s+going\s+to|Now\s+I'll|Next,?\s+I'll)\s+"
-    r"(?:now\s+|just\s+|go\s+ahead\s+and\s+)?"
-    r"(?:check|run|verify|test|re-?run|retry|fix|update|push|commit|create"
-    r"|add|implement|investigate|look|confirm|make|write|clean|finish"
-    r"|continue|proceed|start|kick|follow|handle|take|do|dig|debug|apply"
-    r"|merge|open|file|wire|hook|refactor)\w*\b",
-    re.I)
-
-WAITING_RE = re.compile(
-    r"\blet\s+me\s+know\b|\byour\s+call\b|\bif\s+you\s+(?:want|prefer|like)\b"
-    r"|\bwould\s+you\s+like\b|\bshall\s+i\b|\bwant\s+me\s+to\b"
-    r"|\bwaiting\s+(?:on|for)\s+you",
-    re.I)
-
-DEFER_RE = re.compile(
-    r"\bdeferred\b|\bdeferring\b|\bdefer\s+(?:it|this|that|the)\b"
-    r"|\bas\s+a\s+follow-?up\b|\bfollow-?up\s+(?:task|item|issue|pr|fix|work)\b"
-    r"|\bfile\s+(?:it|this|that|an\s+issue|a\s+ticket|a\s+bug)\s+later\b"
-    r"|\b(?:fix|handle|address|do|tackle)\s+(?:it|this|that)\s+later\b"
-    r"|\bleave\s+(?:it|this|that)\s+for\s+later\b|\bleft\s+for\s+later\b"
-    r"|\bpunt(?:ed|ing)?\s+on\b",
-    re.I)
+# Budget for what we hand the judge. The trace is the primary evidence; cap it
+# so a giant session stays a cheap single call, keeping the MOST RECENT activity
+# (closest to the final summary) when truncating.
+MAX_TRACE_CHARS = 24000
+MAX_TOOL_OUTPUT_CHARS = 2000
+MAX_TOOL_INPUT_CHARS = 600
+MAX_SUMMARY_CHARS = 4000
 
 
 def load_config(dd):
@@ -130,20 +40,75 @@ def load_config(dd):
             cfg = loaded
     except (OSError, ValueError):
         pass
-    gates = dict(DEFAULT_GATES)
+    # One switch now: the LLM judge IS the gate. Default on; an explicit
+    # gates.llm_judge:false (the operator's off state) makes the gate a no-op.
+    # Older configs carrying the removed tier keys still load fine — extra keys
+    # are ignored.
+    enabled = True
     g = cfg.get("gates")
-    if isinstance(g, dict):
-        gates.update(g)
-    return cfg, gates
+    if isinstance(g, dict) and g.get("llm_judge") is False:
+        enabled = False
+    return cfg, enabled
+
+
+def _result_text(content):
+    """Flatten a tool_result content (string or list of blocks) to text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for b in content:
+            if isinstance(b, dict):
+                if b.get("type") == "text":
+                    parts.append(str(b.get("text") or ""))
+                elif "text" in b:
+                    parts.append(str(b.get("text") or ""))
+            elif isinstance(b, str):
+                parts.append(b)
+        return "\n".join(parts)
+    return ""
+
+
+def _clip(s, n):
+    """Keep head and tail of a long string so both the command and its final
+    line (e.g. a test summary) survive truncation."""
+    s = s.strip()
+    if len(s) <= n:
+        return s
+    head = n * 3 // 5
+    tail = n - head
+    return s[:head] + "\n…[%d chars elided]…\n" % (len(s) - n) + s[-tail:]
+
+
+def _tool_input_summary(name, ti):
+    if not isinstance(ti, dict):
+        return ""
+    if name == "Bash":
+        return _clip(str(ti.get("command") or ""), MAX_TOOL_INPUT_CHARS)
+    for k in ("file_path", "notebook_path", "path", "pattern", "url", "query"):
+        if ti.get(k):
+            return _clip(str(ti.get(k)), MAX_TOOL_INPUT_CHARS)
+    try:
+        return _clip(json.dumps(ti), MAX_TOOL_INPUT_CHARS)
+    except (TypeError, ValueError):
+        return ""
 
 
 def parse_transcript(path):
-    """Return (final_assistant_text, tool_uses) from a transcript jsonl."""
+    """Return (final_assistant_text, trace_text).
+
+    trace_text is an ordered, readable rendering of the turn: assistant text,
+    each tool call (name + abbreviated input) and its real output (truncated),
+    in the order they happened — the evidence the judge reads.
+    """
+    events = []          # ordered: ("text", s) | ("tool", id, name, input)
+    results = {}         # tool_use_id -> (ok, output_text)
     texts = []
-    tools = []
-    results = {}
-    idx = 0
-    with open(path, encoding="utf-8", errors="replace") as f:
+    try:
+        f = open(path, encoding="utf-8", errors="replace")
+    except OSError:
+        return "", ""
+    with f:
         for line in f:
             line = line.strip()
             if not line:
@@ -160,6 +125,7 @@ def parse_transcript(path):
                 if isinstance(content, str):
                     if content.strip():
                         texts.append(content)
+                        events.append(("text", content))
                     continue
                 if not isinstance(content, list):
                     continue
@@ -170,159 +136,84 @@ def parse_transcript(path):
                     if b.get("type") == "text":
                         cur.append(b.get("text") or "")
                     elif b.get("type") == "tool_use":
-                        tools.append({"id": b.get("id"),
-                                      "name": b.get("name") or "",
-                                      "input": b.get("input") or {},
-                                      "idx": idx})
-                        idx += 1
-                if any(s.strip() for s in cur):
-                    texts.append("\n".join(cur))
+                        events.append(("tool", b.get("id"),
+                                       b.get("name") or "",
+                                       b.get("input") or {}))
+                joined = "\n".join(s for s in cur if s)
+                if joined.strip():
+                    texts.append(joined)
+                    events.append(("text", joined))
             elif isinstance(content, list):
                 for b in content:
                     if isinstance(b, dict) and b.get("type") == "tool_result":
-                        results[b.get("tool_use_id")] = not b.get("is_error",
-                                                                  False)
-    for t in tools:
-        t["ok"] = results.get(t["id"], False) is True
-    return (texts[-1] if texts else ""), tools
+                        results[b.get("tool_use_id")] = (
+                            not b.get("is_error", False),
+                            _result_text(b.get("content")))
+
+    lines = []
+    for e in events:
+        if e[0] == "text":
+            lines.append("ASSISTANT: " + _clip(e[1], MAX_TOOL_INPUT_CHARS * 2))
+        else:
+            _, tid, name, ti = e
+            ok, out = results.get(tid, (None, ""))
+            mark = "" if ok is None else (" [ok]" if ok else " [error]")
+            head = "TOOL %s%s: %s" % (name, mark,
+                                      _tool_input_summary(name, ti))
+            lines.append(head)
+            if out.strip():
+                lines.append("  OUTPUT: " + _clip(out, MAX_TOOL_OUTPUT_CHARS))
+    trace = "\n".join(lines)
+    if len(trace) > MAX_TRACE_CHARS:
+        trace = "…[earlier activity elided]…\n" + trace[-MAX_TRACE_CHARS:]
+    return (texts[-1] if texts else ""), trace
 
 
-def claim_match(text, rx):
-    for m in rx.finditer(text):
-        prefix = text[max(0, m.start() - 40):m.start()]
-        if NEG_TAIL_RE.search(prefix):
-            continue
-        return m
-    return None
+LLM_JUDGE_PROMPT = """You are a verification gate for a coding agent. The agent \
+just finished a turn and wrote a final summary to its user. You are given that \
+summary AND a trace of what actually happened — the agent's tool calls and their \
+REAL outputs (test runs, git/gh commands, edits) — plus a durable ledger of \
+recorded actions as a backstop in case the trace was truncated.
 
+Your only job: decide whether the summary asserts that a specific EXTERNAL-EFFECT \
+action COMPLETED when the evidence does NOT support it.
 
-def strong_claim_match(text):
-    """A live (non-negated, non-future) strong end-to-end claim, or None.
-    Adds an active-future guard ("I will validate ...") on top of the shared
-    negation guard, because the strong verbs share a stem across tenses."""
-    for m in STRONG_CLAIM_RE.finditer(text):
-        prefix = text[max(0, m.start() - 40):m.start()]
-        if NEG_TAIL_RE.search(prefix) or STRONG_FUTURE_RE.search(prefix):
-            continue
-        return m
-    return None
+Block ONLY these claim types, and only when the trace/ledger do not support them:
+  - pushed / merged / shipped a branch or PR
+  - sent / posted / delivered a message
+  - tests pass / suite is green / e2e passed
+  - deployed / released to an environment
 
+READ THE TRACE — it holds the real evidence:
+  - "tests pass / specs green" is SUPPORTED if a test command's OUTPUT shows a pass
+    (e.g. "4 passed (48.6s)", "OK", "0 failed"). A test run is enough; an empty
+    ledger does NOT override visible passing output.
+  - "pushed / merged" is SUPPORTED if a git/gh command in the trace pushed or merged
+    (or its output shows the branch already up to date / the PR merged).
+  - "sent / posted" is SUPPORTED if a send-class command (curl, mail, gh pr comment…)
+    ran in the trace.
 
-def _unpushed_count(cwd):
-    """Commits ahead of upstream; None = not a repo / no upstream / no git."""
-    try:
-        r = subprocess.run(
-            ["git", "-C", cwd, "rev-list", "--count", "@{u}..HEAD"],
-            capture_output=True, text=True, timeout=10)
-        if r.returncode != 0:
-            return None
-        return int(r.stdout.strip() or "0")
-    except Exception:
-        return None
-
-
-def _receipts_for_cwd(cwd, dd):
-    """All bin/prove receipts recorded for this working directory."""
-    dirs = []
-    for d in (dd, pg.fallback_data_dir()):
-        if d and d not in dirs:
-            dirs.append(d)
-    real = os.path.realpath(cwd)
-    recs = []
-    for d in dirs:
-        rd = os.path.join(d, "ledger", "receipts")
-        try:
-            names = os.listdir(rd)
-        except OSError:
-            continue
-        for name in names:
-            if not name.endswith(".jsonl"):
-                continue
-            try:
-                with open(os.path.join(rd, name), encoding="utf-8") as f:
-                    for line in f:
-                        try:
-                            r = json.loads(line)
-                        except ValueError:
-                            continue
-                        if (isinstance(r, dict) and
-                                os.path.realpath(str(r.get("cwd") or "")) == real):
-                            recs.append(r)
-            except OSError:
-                continue
-    return recs
-
-
-def _f(v):
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _norm(p):
-    return str(p or "").replace("\\", "/").strip().rstrip("/")
-
-
-def _paths_match(a, b):
-    """True if two file paths plausibly name the same file: equal after
-    normalization, or one is a path-suffix of the other on a path-segment
-    boundary (so src/foo.py matches /repo/src/foo.py but NOT src/barfoo.py).
-    Basename-only equality is intentionally NOT enough — pkg_a/models.py and
-    pkg_b/models.py are different files (adversarial finding C1)."""
-    a, b = _norm(a), _norm(b)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
-    return hi.endswith("/" + lo)
-
-
-def _covered_paths(recs):
-    """Paths a prove-cov receipt recorded as executed (>0 lines). Plain prove
-    receipts have no 'covered' key and contribute nothing."""
-    out = []
-    for r in recs:
-        cov = r.get("covered")
-        if isinstance(cov, list):
-            out.extend(str(c) for c in cov if c)
-    return out
-
-
-def _prove_cmd():
-    root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-    return os.path.join(root, "bin", "prove") if root else "bin/prove"
-
-
-LLM_JUDGE_PROMPT = """You are a verification gate for a coding agent. The agent just \
-finished a turn and wrote a final summary to its user. Decide whether the summary \
-asserts that a specific EXTERNAL-EFFECT action completed when the evidence shows it \
-did not.
-
-Block ONLY these claim types, and only when the evidence does not support them:
-  - pushed / merged / shipped a branch or PR  (evidence: a push/commit in the ledger, or a clean git upstream)
-  - sent / posted / delivered a message       (evidence: a send-class command in the ledger)
-  - tests pass / suite is green / e2e passed   (evidence: a test_run in the ledger)
-  - deployed / released to an environment       (evidence: a deploy/send action)
-
-Everything else is NOT a violation — PASS it:
-  - editing, writing, refactoring, or "updating" files (local work needs no ledger proof; the agent's edits are real even with an empty ledger)
-  - analysis, explanations, descriptions of what code does, plans ("I'll next…"), questions, options, status
+PASS everything else:
+  - editing / writing / refactoring files (local work needs no external proof)
+  - analysis, explanations, plans ("I'll next…"), questions, options, status
+  - REPORTING a verified external fact (e.g. reading that a PR is merged via `gh`),
+    even if no push ran in THIS session — the orchestrator legitimately reports work
+    done elsewhere
   - hedged or UNVERIFIED statements
-  - a turn that simply did none of the four blockable actions — MOST turns push nothing, send nothing, run no tests, and that is completely normal
+  - a turn that did none of the four blockable actions — MOST turns do none, and that
+    is completely normal
 
-Critical: an empty ledger is the NORMAL state, not evidence of a lie. Only block when \
-the summary makes one of the four specific external-effect claims above AND the matching \
-evidence is absent. Default hard to PASS; when in any doubt, PASS.
+Default hard to PASS. Block only a clear, unsupported external-effect claim. When in \
+any doubt, PASS.
 
 === AGENT FINAL SUMMARY ===
 %(summary)s
 
-=== EVIDENCE (what actually happened this session) ===
-Actions recorded this session (durable ledger): %(ledger)s
-Command classes seen this turn: %(classes)s
-Git: %(git)s
+=== SESSION TRACE (tool calls and their real outputs, in order; most recent last) ===
+%(trace)s
+
+=== DURABLE LEDGER (recorded action kinds this session, backstop only) ===
+%(ledger)s
 
 === YOUR VERDICT ===
 Reply with EXACTLY one line:
@@ -332,32 +223,17 @@ or
 """
 
 
-def _git_state(cwd):
-    """One-line upstream summary for the judge; '' if not a git repo."""
-    try:
-        n = _unpushed_count(cwd)
-        if n is None:
-            return "not a git repo / no upstream"
-        return "%d local commit(s) not pushed to upstream" % n
-    except Exception:
-        return "unknown"
-
-
-def llm_judge_verdict(text, ledger, session_classes, cwd, cfg):
-    """Ask an LLM to judge the summary against the evidence.
+def judge_verdict(summary, trace, ledger_digest, cfg):
+    """Ask the LLM to judge the summary against the rendered transcript.
 
     Returns a block-reason string, or None to PASS. Fails open (None) on any
     error so the gate never wedges the session on a flaky model call.
     """
-    cmd = cfg.get("llm_judge_cmd") or "claude --bare -p --model haiku"
-    actions = [e.get("kind") for e in ledger
-               if e.get("kind") in ("push", "send", "git_commit", "test_run")]
-    digest = ", ".join(sorted(set(actions))) or "(none recorded)"
+    cmd = cfg.get("llm_judge_cmd") or DEFAULT_JUDGE_CMD
     prompt = LLM_JUDGE_PROMPT % {
-        "summary": text[:4000],
-        "ledger": digest,
-        "classes": ", ".join(sorted(session_classes)) or "(none)",
-        "git": _git_state(cwd),
+        "summary": summary[:MAX_SUMMARY_CHARS],
+        "trace": trace or "(no tool calls recorded this turn)",
+        "ledger": ledger_digest or "(none recorded)",
     }
     try:
         r = subprocess.run(cmd, shell=True, input=prompt,
@@ -365,245 +241,26 @@ def llm_judge_verdict(text, ledger, session_classes, cwd, cfg):
     except Exception:
         return None  # fail open
     out = (r.stdout or "").strip()
-    # Take the last non-empty line as the verdict (models may preamble).
     verdict = ""
     for line in reversed(out.splitlines()):
         if line.strip():
             verdict = line.strip()
             break
     if verdict.upper().startswith("BLOCK"):
-        reason = verdict[5:].strip(" :-") or "claim not supported by session evidence"
+        reason = verdict[5:].strip(" :-") or "claim not supported by the session"
         return "LLM verify-gate: " + reason
     return None  # PASS, or unparseable → fail open
 
 
-def evaluate(final, tools, cwd, dd, sid, cfg, gates):
-    text = final.replace("’", "'")
-    ok_bash = []
-    session_classes = set()
-    for t in tools:
-        if t["name"] == "Bash" and t["ok"]:
-            cmd = str((t["input"] or {}).get("command") or "")
-            t["classes"] = pg.bash_classes(cmd)
-            session_classes |= t["classes"]
-            ok_bash.append(t)
-
-    edit_idxs = [t["idx"] for t in tools
-                 if t["name"] in EDIT_TOOLS and t["ok"]]
-    test_run_idxs = [t["idx"] for t in ok_bash if "test_run" in t["classes"]]
-
-    # Production (non-test) files edited this session, by basename. The
-    # vacuous_test tier asks: was the real code path actually exercised, or
-    # only a unit harness around it?
-    prod_edit_paths = set()
-    prod_edit_idxs = []
-    for t in tools:
-        if t["name"] in EDIT_TOOLS and t["ok"]:
-            p = str((t["input"] or {}).get("file_path") or
-                    (t["input"] or {}).get("notebook_path") or "")
-            if p and not pg.is_test_path(p):
-                prod_edit_paths.add(p)
-                prod_edit_idxs.append(t["idx"])
-    # Only an e2e/browser runner counts as real-path evidence here. A
-    # send-class command (curl/mail) is NOT accepted: it proves a request was
-    # made, not that the edited code path produced it, and `curl --help` would
-    # trivially clear the claim. The honest escapes are an e2e run, a covering
-    # prove-cov receipt, honest phrasing, or UNVERIFIED:.
-    e2e_run_idxs = [t["idx"] for t in ok_bash if "e2e_run" in t["classes"]]
-
-    cache = {}
-
-    def unpushed():
-        if "n" not in cache:
-            cache["n"] = _unpushed_count(cwd)
-        return cache["n"]
-
-    def receipts():
-        if "r" not in cache:
-            cache["r"] = _receipts_for_cwd(cwd, dd)
-        return cache["r"]
-
-    ledger = pg.read_ledger(dd, sid)
-
-    # Fold the durable ledger's recorded action kinds into session_classes.
-    # session_classes is built from the live transcript, which is truncated by
-    # context compaction — so a push/send/commit that ran in an EARLIER turn
-    # (then got compacted out) vanishes from the transcript and the claim reads
-    # as unverified, blocking a legitimate summary. The PostToolUse recorder
-    # (mark_dirty) persists those same kinds (push/send/git_commit/test_run) to
-    # the session ledger, which survives compaction. Trust it as evidence the
-    # action happened this session. (ledger kinds use the same class names.)
-    for _e in ledger:
-        _k = _e.get("kind")
-        if _k in ("push", "send", "git_commit", "test_run"):
-            session_classes.add(_k)
-
-    # LLM judge (default tier). When on, an LLM reads the summary together with
-    # the session evidence (ledger actions, command classes, git state) and
-    # decides whether any action-claim is unsupported — instead of the brittle
-    # keyword tiers below, which fire on the word "merged" even in a turn that
-    # legitimately pushed nothing. The judge is told most turns take no such
-    # action and that is fine. Fails open (None) on any model/parse error, then
-    # falls through to the deterministic tiers as a backstop only if explicitly
-    # left on. With llm_judge on and the regex tiers off (the default config),
-    # a clean PASS returns here and the keyword tiers never run.
-    if gates.get("llm_judge"):
-        verdict = llm_judge_verdict(text, ledger, session_classes, cwd, cfg)
-        if verdict:
-            return verdict
-
-    push_claim = claim_match(text, PUSH_CLAIM_RE)
-
-    # a. SHIP-STATE: claimed shipped, commit ran, but commits are unpushed.
-    if gates.get("ship_state") and push_claim and "git_commit" in session_classes:
-        n = unpushed()
-        if n:
-            return ("Claim/state mismatch: the final message says "
-                    "'%s', but %d commit(s) are not on the upstream. "
-                    "Run: git push\nVerify: git log --oneline @{u}..\n"
-                    "If intentionally local-only, restate prefixed with "
-                    "UNVERIFIED:." % (push_claim.group(0), n))
-
-    # b. CHECKABLE-CLAIM cross-reference.
-    if gates.get("checkable_claim"):
-        if push_claim and "push" not in session_classes:
-            # Upstream state is the ground truth: 0 unpushed verifies the
-            # claim even without a push command in this session.
-            if unpushed() != 0:
-                return ("Unverified claim '%s': no git push or gh pr "
-                        "command ran in this session. Push now, then "
-                        "verify with: git log --oneline @{u}..\n"
-                        "Or restate prefixed with UNVERIFIED:."
-                        % push_claim.group(0))
-        send_claim = claim_match(text, SEND_CLAIM_RE)
-        if send_claim and "send" not in session_classes:
-            return ("Unverified claim '%s': no send-class command (curl, "
-                    "mail, gh ...) ran in this session. Run the send "
-                    "command now and show its output, or restate prefixed "
-                    "with UNVERIFIED:." % send_claim.group(0))
-        if claim_match(text, TESTS_CLAIM_RE):
-            last_edit = max(edit_idxs) if edit_idxs else -1
-            last_run = max(test_run_idxs) if test_run_idxs else -1
-            ok = last_run >= 0 and last_run > last_edit
-            if not ok:
-                last_edit_ts = max(
-                    [_f(e.get("ts")) for e in ledger
-                     if e.get("kind") == "edit"] or [0.0])
-                ok = any(_f(r.get("ts")) >= last_edit_ts for r in receipts())
-            if not ok:
-                return ("Unverified claim: tests pass, but no test runner "
-                        "ran after the last file edit in this session. Run "
-                        "the test suite now and show the result, or restate "
-                        "prefixed with UNVERIFIED:.")
-
-    # c. RED-GREEN ledger: test files edited, never proven green. Evaluated
-    # PER FILE against the latest green proof in the durable ledger, NOT
-    # against a single global max-edit timestamp. The old global-max design
-    # re-flagged every test file the moment ONE of them got a late un-rerun
-    # edit: a 37-file coverage session that proved 36 files green across many
-    # turns, then touched one test file once more without re-running, had all
-    # 37 re-blocked — a cross-turn false positive (the same class commit #3
-    # fixed for the checkable_claim tier). A green run/receipt clears every
-    # test file edited at or before it; only files whose LAST edit post-dates
-    # the most recent green proof are genuinely unproven and block.
-    if gates.get("red_green"):
-        last_edit_ts = {}
-        for e in ledger:
-            if e.get("kind") == "edit" and e.get("test"):
-                p = str(e.get("path") or "")
-                ts = _f(e.get("ts"))
-                if p and ts >= last_edit_ts.get(p, -1.0):
-                    last_edit_ts[p] = ts
-        if last_edit_ts:
-            green_tss = [_f(e.get("ts")) for e in ledger
-                         if e.get("kind") == "test_run" and e.get("ok", True)]
-            green_tss += [_f(r.get("ts")) for r in receipts()]
-            latest_green = max(green_tss) if green_tss else -1.0
-            unproven = sorted(p for p, ts in last_edit_ts.items()
-                              if latest_green < ts)
-            if unproven:
-                return ("Test file(s) edited but never proven green: %s. "
-                        "Run: %s \"tests pass after edits\" -- <test command>"
-                        "\nOr restate prefixed with UNVERIFIED:."
-                        % (", ".join(unproven[:3]), _prove_cmd()))
-
-    # c2. VACUOUS-TEST: a STRONG claim ("validated end-to-end", "exercised the
-    # real code path") after editing production code, but the only evidence is
-    # a unit runner. A mocked unit test goes green without touching the real
-    # subprocess/server/browser, so a unit pass cannot back an end-to-end
-    # claim. Clears on real-path evidence: an e2e/browser runner after the
-    # edit, or a prove-cov receipt that covered an edited production file.
-    # Off by default (config-gated) — measured fire-rate is in the PR.
-    if gates.get("vacuous_test") and prod_edit_paths:
-        strong = strong_claim_match(text)
-        if strong:
-            # The real-path run must come AFTER the last production edit —
-            # exercising the old code then editing it proves nothing about the
-            # claim (mirrors the tests-pass tier's post-edit ordering).
-            last_prod_edit = max(prod_edit_idxs)
-            last_real_run = max(e2e_run_idxs) if e2e_run_idxs else -1
-            has_real_run = last_real_run > last_prod_edit
-            # prove-cov runs in the agent's Bash tool, so it is timestamped,
-            # not tool-ordered; accept any covering receipt (the gate cannot
-            # align receipt ts with tool idx, and a coverage receipt for the
-            # edited file is strong positive evidence regardless). Match by
-            # path-suffix, not bare basename, so models.py in one package does
-            # not vouch for models.py in another.
-            covered = _covered_paths(receipts())
-            covers_edit = any(_paths_match(c, e)
-                              for c in covered for e in prod_edit_paths)
-            if not has_real_run and not covers_edit:
-                edited = sorted(os.path.basename(p) for p in prod_edit_paths)
-                return ("Unverified claim '%s': you edited production code "
-                        "(%s) and claimed the real path ran, but only a unit "
-                        "runner did — a mocked unit test passes without "
-                        "exercising the real subprocess/server/browser. Prove "
-                        "the real path with one of:\n"
-                        "  - an e2e/browser run (playwright, cypress), or\n"
-                        "  - %s-cov \"end-to-end\" <file> -- <command that runs "
-                        "the real path under coverage>\n"
-                        "Or, if you only ran unit tests, say so plainly "
-                        "(\"unit tests pass\") or prefix with UNVERIFIED:."
-                        % (strong.group(0).strip(), ", ".join(edited[:3]),
-                           _prove_cmd()))
-
-    # d. PROMISSORY ending: ends on future action, not a question/handoff.
-    if gates.get("promissory") and text.strip():
-        tail = text[-300:]
-        m = PROMISSORY_RE.search(tail)
-        if m and not WAITING_RE.search(tail):
-            sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-            if "?" not in " ".join(sentences[-2:]):
-                return ("Final message ends with a promise: \"%s...\". "
-                        "Either do it now, or end with an explicit handoff "
-                        "(what remains, who acts next, or a question)."
-                        % m.group(0)[:60])
-
-    # e. DEFERRAL without artifact.
-    if gates.get("deferral") and text.strip():
-        if DEFER_RE.search(text):
-            has_artifact = "deferral_artifact" in session_classes or any(
-                t["name"] in EDIT_TOOLS and t["ok"] and
-                "DEFERRALS" in str((t["input"] or {}).get("file_path") or "")
-                for t in tools)
-            if not has_artifact:
-                return ("Deferral language with no artifact: nothing was "
-                        "filed (no gh issue create, no DEFERRALS append). "
-                        "Run /proofgate:defer or create the issue now — or "
-                        "just do the deferred work.")
-
-    # Optional LLM-judge tier, off by default.
-    if gates.get("llm_judge") and cfg.get("llm_judge_cmd"):
-        try:
-            r = subprocess.run(cfg["llm_judge_cmd"], shell=True, input=text,
-                               capture_output=True, text=True, timeout=30)
-            out = (r.stdout or "").strip()
-            if out.startswith("BLOCK"):
-                return out[5:].strip() or "LLM judge flagged the final claim."
-        except Exception:
-            pass
-
-    return None
+def _ledger_digest(dd, sid):
+    """Recorded action kinds this session, as a backstop for a truncated
+    trace. Not a verdict input on its own — the trace is the evidence."""
+    kinds = []
+    for e in pg.read_ledger(dd, sid):
+        k = e.get("kind")
+        if k in ("push", "send", "git_commit", "test_run"):
+            kinds.append(k)
+    return ", ".join(sorted(set(kinds)))
 
 
 def _count_path(dd, sid):
@@ -636,10 +293,11 @@ def main():
     if not isinstance(data, dict):
         return
     sid = pg.sanitize_id(data.get("session_id"))
-    cwd = str(data.get("cwd") or os.getcwd())
     active = bool(data.get("stop_hook_active"))
     dd = pg.data_dir()
-    cfg, gates = load_config(dd)
+    cfg, enabled = load_config(dd)
+    if not enabled:
+        return
 
     count = read_count(dd, sid, active)
     if count >= MAX_BLOCKS_PER_TURN:
@@ -647,11 +305,14 @@ def main():
     if not active:
         write_count(dd, sid, 0)
 
-    final, tools = parse_transcript(str(data.get("transcript_path") or ""))
-    if "UNVERIFIED" in final:
+    summary, trace = parse_transcript(str(data.get("transcript_path") or ""))
+    if not summary.strip():
+        return
+    if "UNVERIFIED" in summary:
         return
 
-    reason = evaluate(final, tools, cwd, dd, sid, cfg, gates)
+    reason = judge_verdict(summary.replace("’", "'"), trace,
+                           _ledger_digest(dd, sid), cfg)
     if reason:
         write_count(dd, sid, count + 1)
         print(json.dumps({"decision": "block", "reason": reason}))
