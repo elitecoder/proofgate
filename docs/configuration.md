@@ -15,7 +15,7 @@ in it survives plugin updates.
   "gates": {
     "llm_judge": true
   },
-  "llm_judge_cmd": "claude --bare -p --model haiku",
+  "llm_judge_cmd": "claude -p --model haiku --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands --tools ''",
   "notify_heads": ["notify-send", "terminal-notifier"],
   "notify_window_seconds": 300,
   "scope_budget": [50, 150]
@@ -49,11 +49,24 @@ classified log, an honest "specs green" backed by passing test output goes throu
 Other behavior to know:
 
 - **Model.** `llm_judge_cmd` is the shell command the gate pipes its prompt into.
-  The default is `claude --bare -p --model haiku`. The gate reads the last non-empty
-  line of the command's output and blocks only if it starts with `BLOCK`.
-- **Fails open.** If the command errors, times out, or prints something
-  unparseable, the gate passes. `hooks/hooks.json` gives the whole Stop hook 15
-  seconds. Before you rely on the gate, confirm the judge
+  The default runs haiku with your normal Claude Code sign-in and loads no
+  settings, plugins, MCP servers, slash commands, or tools:
+  `claude -p --model haiku --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands --tools ''`.
+  Don't use `--bare`: it reads only `ANTHROPIC_API_KEY`, so on an OAuth sign-in it
+  answers "Not logged in" and the gate passes every turn. The gate reads the last
+  non-empty line of the command's output and blocks only if it starts with `BLOCK`.
+- **Claim source.** The gate judges the hook input's `last_assistant_message`.
+  Claude Code runs the Stop hook before the turn's final message reaches the
+  transcript file, so the transcript supplies only the trace. If the hook input
+  has no `last_assistant_message`, the gate falls back to the transcript's last
+  assistant text.
+- **No recursion.** The gate runs the judge with `PROOFGATE_JUDGE=1` set, and the
+  gate does nothing when it sees that variable. A judge command that loads
+  proofgate can't start a second judge.
+- **Fails open.** If the command errors, prints something unparseable, or runs
+  past 45 seconds, the gate passes. On a timeout the gate kills the judge's whole
+  process group. `hooks/hooks.json` gives the Stop hook 60 seconds, so the judge
+  timeout always fires first. Before you rely on the gate, confirm the judge
   command answers in your shell; if it can't, the gate silently passes every turn.
 - **Loop cap.** The gate blocks at most twice per turn, then lets the stop through.
 - **Escape hatch.** A final message that contains `UNVERIFIED` is never sent to the

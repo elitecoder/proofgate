@@ -8,11 +8,17 @@ supported by that evidence. There are no mechanical claim tiers: the model
 reads the transcript and the output (e.g. "4 passed (48.6s)"), instead of a
 gate cross-referencing a lossy classified ledger.
 
-Fails open on any error: a flaky/missing model, a malformed transcript, or a
-parse failure all return PASS so the gate never wedges a session.
+The claim is the hook input's `last_assistant_message`: Claude Code fires the
+Stop hook before the turn's final message reaches the transcript file. The
+transcript supplies the trace, and the claim when the hook input lacks it.
+
+Fails open on any error: a flaky/missing model, a judge timeout, a malformed
+transcript, or a parse failure all return PASS so the gate never wedges a
+session.
 """
 import json
 import os
+import signal
 import subprocess
 import sys
 
@@ -20,7 +26,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pg_common as pg
 
 MAX_BLOCKS_PER_TURN = 2
-DEFAULT_JUDGE_CMD = "claude --bare -p --model haiku"
+DEFAULT_JUDGE_CMD = ("claude -p --model haiku --setting-sources '' "
+                     "--strict-mcp-config --no-session-persistence "
+                     "--disable-slash-commands --tools ''")
+JUDGE_ENV_GUARD = "PROOFGATE_JUDGE"
+# Must stay under the Stop hook timeout in hooks/hooks.json.
+JUDGE_TIMEOUT_S = 45
 
 # Budget for what we hand the judge. The trace is the primary evidence; cap it
 # so a giant session stays a cheap single call, keeping the MOST RECENT activity
@@ -235,12 +246,22 @@ def judge_verdict(summary, trace, ledger_digest, cfg):
         "trace": trace or "(no tool calls recorded this turn)",
         "ledger": ledger_digest or "(none recorded)",
     }
+    env = dict(os.environ)
+    env[JUDGE_ENV_GUARD] = "1"
     try:
-        r = subprocess.run(cmd, shell=True, input=prompt,
-                           capture_output=True, text=True, timeout=45)
+        proc = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True,
+                                env=env, start_new_session=True)
     except Exception:
         return None  # fail open
-    out = (r.stdout or "").strip()
+    try:
+        out, _ = proc.communicate(prompt, timeout=JUDGE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        return None  # fail open
+    out = (out or "").strip()
     verdict = ""
     for line in reversed(out.splitlines()):
         if line.strip():
@@ -289,6 +310,8 @@ def write_count(dd, sid, n):
 
 
 def main():
+    if os.environ.get(JUDGE_ENV_GUARD):
+        return
     data = json.loads(sys.stdin.read())
     if not isinstance(data, dict):
         return
@@ -306,6 +329,9 @@ def main():
         write_count(dd, sid, 0)
 
     summary, trace = parse_transcript(str(data.get("transcript_path") or ""))
+    last = data.get("last_assistant_message")
+    if isinstance(last, str) and last.strip():
+        summary = last
     if not summary.strip():
         return
     if "UNVERIFIED" in summary:

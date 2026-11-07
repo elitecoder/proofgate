@@ -7,9 +7,15 @@ the mechanical-ledger design got wrong: it judged "tests pass" against a lossy
 classified ledger and never saw "4 passed").
 """
 import json
+import os
+import sys
+import time
 
 from test_verifygate_helpers import (
-    make_transcript, run_stop, stop_payload)
+    ROOT, make_transcript, run_stop, stop_payload)
+
+sys.path.insert(0, str(ROOT / "scripts" / "verify-gate"))
+import stop_gate  # noqa: E402
 
 
 def _data(tmp_path, cfg):
@@ -185,3 +191,119 @@ def test_loop_guard_resets_on_new_turn(tmp_path):
     # a new turn resets
     again = run_stop(stop_payload(tr, tmp_path, active=False), dd).stdout.strip()
     assert again
+
+
+# --- Claude Code 2.1.319 hook input ----------------------------------------
+# The Stop hook runs before the turn's final assistant message reaches the
+# transcript file. The claim arrives only in `last_assistant_message`.
+
+CLAIMS_TESTS_CMD = ("grep -q 'All tests pass' && printf 'BLOCK no test ran' "
+                    "|| printf 'PASS'")
+
+
+def test_claim_in_last_assistant_message_only_is_judged(tmp_path):
+    dd = _data(tmp_path, _judge(CLAIMS_TESTS_CMD))
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("edit", "slug.py", True, "edited"),
+    ])
+    p = stop_payload(tr, tmp_path, last_message="Fixed. All tests pass.")
+    r = run_stop(p, dd)
+    out = json.loads(r.stdout)
+    assert out["decision"] == "block"
+    assert "no test ran" in out["reason"]
+
+
+def test_last_assistant_message_wins_over_stale_transcript_text(tmp_path):
+    cap = tmp_path / "seen.txt"
+    dd = _data(tmp_path, _judge(_capture_cmd(str(cap))))
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "I'll look at slug.py."),
+        ("edit", "slug.py", True, "edited"),
+    ])
+    run_stop(stop_payload(tr, tmp_path,
+                          last_message="Fixed. All tests pass."), dd)
+    seen = cap.read_text()
+    summary = seen.split("=== AGENT FINAL SUMMARY ===")[1].split("===")[0]
+    assert summary.strip() == "Fixed. All tests pass."
+    assert "TOOL Edit" in seen
+
+
+def test_unverified_in_last_assistant_message_skips_judge(tmp_path):
+    dd = _data(tmp_path, _judge(BLOCK_CMD))
+    tr = make_transcript(tmp_path / "t.jsonl", [("text", "Merged the PR.")])
+    r = run_stop(stop_payload(tr, tmp_path,
+                              last_message="UNVERIFIED: I think it merged."), dd)
+    assert r.stdout.strip() == ""
+
+
+# --- default judge command -------------------------------------------------
+# A fake `claude` on PATH behaves like Claude Code on an OAuth sign-in:
+# `--bare` reads only API keys and answers "Not logged in".
+
+FAKE_CLAUDE = """#!/bin/sh
+printf '%s\\n' "$*" > "$(dirname "$0")/argv.txt"
+printf '%s\\n' "${PROOFGATE_JUDGE:-}" > "$(dirname "$0")/env.txt"
+cat > /dev/null
+for a in "$@"; do
+  if [ "$a" = "--bare" ]; then echo "Not logged in · Please run /login"; exit 1; fi
+done
+printf 'BLOCK the test claim has no test run behind it'
+"""
+
+
+def _fake_claude(tmp_path):
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    exe = bindir / "claude"
+    exe.write_text(FAKE_CLAUDE)
+    exe.chmod(0o755)
+    return bindir
+
+
+def test_default_judge_works_without_api_key(tmp_path):
+    bindir = _fake_claude(tmp_path)
+    dd = _data(tmp_path, {})
+    tr = make_transcript(tmp_path / "t.jsonl", [("edit", "slug.py")])
+    p = stop_payload(tr, tmp_path, last_message="Fixed. All tests pass.")
+    r = run_stop(p, dd, env_extra={
+        "PATH": "%s:%s" % (bindir, os.environ["PATH"])})
+    out = json.loads(r.stdout)
+    assert out["decision"] == "block"
+    argv = (bindir / "argv.txt").read_text()
+    assert "--model haiku" in argv
+    assert "--setting-sources" in argv
+
+
+def test_default_judge_runs_with_recursion_guard(tmp_path):
+    bindir = _fake_claude(tmp_path)
+    tr = make_transcript(tmp_path / "t.jsonl", [("edit", "slug.py")])
+    p = stop_payload(tr, tmp_path, last_message="Fixed. All tests pass.")
+    run_stop(p, _data(tmp_path, {}), env_extra={
+        "PATH": "%s:%s" % (bindir, os.environ["PATH"])})
+    assert (bindir / "env.txt").read_text().strip() == "1"
+
+
+def test_gate_is_a_noop_inside_the_judge_session(tmp_path):
+    dd = _data(tmp_path, _judge(BLOCK_CMD))
+    tr = make_transcript(tmp_path / "t.jsonl", [("text", "Merged the PR.")])
+    r = run_stop(stop_payload(tr, tmp_path), dd,
+                 env_extra={"PROOFGATE_JUDGE": "1"})
+    assert r.stdout.strip() == ""
+
+
+# --- judge timeout -----------------------------------------------------------
+
+def test_judge_timeout_fits_inside_stop_hook_timeout():
+    hooks = json.loads((ROOT / "hooks" / "hooks.json").read_text())
+    stop_timeout = hooks["hooks"]["Stop"][0]["hooks"][0]["timeout"]
+    assert stop_gate.JUDGE_TIMEOUT_S + 10 <= stop_timeout
+
+
+def test_judge_timeout_fails_open_and_kills_the_judge(monkeypatch):
+    monkeypatch.setattr(stop_gate, "JUDGE_TIMEOUT_S", 1)
+    start = time.monotonic()
+    reason = stop_gate.judge_verdict(
+        "Merged the PR.", "", "",
+        {"llm_judge_cmd": "sleep 5; printf 'BLOCK too late'"})
+    assert reason is None
+    assert time.monotonic() - start < 3
