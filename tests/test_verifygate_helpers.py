@@ -11,9 +11,10 @@ PROVE = ROOT / "bin" / "prove"
 PROVE_COV = ROOT / "bin" / "prove-cov"
 
 
-def run_stop(payload, data_dir, raw=None):
+def run_stop(payload, data_dir, raw=None, env_extra=None):
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_DATA"] = str(data_dir)
+    env.update(env_extra or {})
     stdin = raw if raw is not None else json.dumps(payload)
     return subprocess.run(["sh", str(STOP)], input=stdin,
                           capture_output=True, text=True, env=env,
@@ -58,14 +59,18 @@ def block_of(result):
     return obj
 
 
-def stop_payload(transcript_path, cwd, sid="sess1", active=False):
-    return {
+def stop_payload(transcript_path, cwd, sid="sess1", active=False,
+                 last_message=None):
+    p = {
         "session_id": sid,
         "transcript_path": str(transcript_path),
         "cwd": str(cwd),
         "hook_event_name": "Stop",
         "stop_hook_active": active,
     }
+    if last_message is not None:
+        p["last_assistant_message"] = last_message
+    return p
 
 
 def make_transcript(path, items):

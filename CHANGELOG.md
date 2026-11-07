@@ -6,6 +6,25 @@ All notable changes to proofgate are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-07
+
+### Fixed
+
+- **The Stop gate never blocked on Claude Code 2.1.319.** Three faults stacked:
+  - The gate read the claim only from `transcript_path`. Claude Code runs the Stop
+    hook before the turn's final message reaches that file, so the gate never saw
+    the claim. The gate now judges the hook input's `last_assistant_message` and
+    falls back to the transcript when that field is absent.
+  - The default judge, `claude --bare -p --model haiku`, reads only
+    `ANTHROPIC_API_KEY`. On an OAuth sign-in it answers "Not logged in", so every
+    turn passed. The default now drops `--bare` and loads no settings, plugins, MCP
+    servers, slash commands, or tools. The gate sets `PROOFGATE_JUDGE=1` for the
+    judge and does nothing when it sees that variable, so the judge can't trigger
+    the gate again.
+  - The judge could run for 45 seconds, but the Stop hook had 15. The Stop hook now
+    has 60 seconds. On a judge timeout the gate kills the judge's process group and
+    passes, as it does on any judge error.
+
 ## [0.3.0] - 2026-06-19
 
 ### Changed
