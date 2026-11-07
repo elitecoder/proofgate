@@ -53,13 +53,19 @@ Other behavior to know:
   settings, plugins, MCP servers, slash commands, or tools:
   `claude -p --model haiku --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands --tools ''`.
   Don't use `--bare`: it reads only `ANTHROPIC_API_KEY`, so on an OAuth sign-in it
-  answers "Not logged in" and the gate passes every turn. The gate reads the last
+  answers "Not logged in" and the gate passes every turn. The default skips every
+  `settings.json`, so if your sign-in comes only from there (an `apiKeyHelper`, or
+  provider variables such as Bedrock or Vertex ones in its `env` block), the judge
+  can't sign in. Export those variables in your shell, or set `llm_judge_cmd` to a
+  command that passes your settings file with `--settings`. The gate reads the last
   non-empty line of the command's output and blocks only if it starts with `BLOCK`.
 - **Claim source.** The gate judges the hook input's `last_assistant_message`.
   Claude Code runs the Stop hook before the turn's final message reaches the
   transcript file, so the transcript supplies only the trace. If the hook input
   has no `last_assistant_message`, the gate falls back to the transcript's last
-  assistant text.
+  assistant text. If the field is present but empty, the gate judges nothing.
+  The judge rules on the final summary only, so a summary that retracts an earlier
+  blocked claim passes.
 - **No recursion.** The gate runs the judge with `PROOFGATE_JUDGE=1` set, and the
   gate does nothing when it sees that variable. A judge command that loads
   proofgate can't start a second judge.

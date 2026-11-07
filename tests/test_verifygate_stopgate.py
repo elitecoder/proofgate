@@ -269,9 +269,13 @@ def test_default_judge_works_without_api_key(tmp_path):
         "PATH": "%s:%s" % (bindir, os.environ["PATH"])})
     out = json.loads(r.stdout)
     assert out["decision"] == "block"
-    argv = (bindir / "argv.txt").read_text()
-    assert "--model haiku" in argv
-    assert "--setting-sources" in argv
+    argv = (bindir / "argv.txt").read_text().split()
+    assert argv[:3] == ["-p", "--model", "haiku"]
+    for flag in ("--setting-sources", "--strict-mcp-config",
+                 "--no-session-persistence", "--disable-slash-commands",
+                 "--tools"):
+        assert flag in argv
+    assert argv[argv.index("--tools") + 1:] == []
 
 
 def test_default_judge_runs_with_recursion_guard(tmp_path):
@@ -299,11 +303,54 @@ def test_judge_timeout_fits_inside_stop_hook_timeout():
     assert stop_gate.JUDGE_TIMEOUT_S + 10 <= stop_timeout
 
 
-def test_judge_timeout_fails_open_and_kills_the_judge(monkeypatch):
+def test_judge_timeout_fails_open_and_kills_the_judge(monkeypatch, tmp_path):
+    marker = tmp_path / "judge-survived"
     monkeypatch.setattr(stop_gate, "JUDGE_TIMEOUT_S", 1)
-    start = time.monotonic()
     reason = stop_gate.judge_verdict(
         "Merged the PR.", "", "",
-        {"llm_judge_cmd": "sleep 5; printf 'BLOCK too late'"})
+        {"llm_judge_cmd": "sh -c 'sleep 2; touch %s'; printf 'BLOCK late'"
+                          % marker})
     assert reason is None
-    assert time.monotonic() - start < 3
+    time.sleep(2.5)
+    assert not marker.exists(), "the judge's child process outlived the kill"
+
+
+def test_judge_timeout_survives_a_judge_that_already_exited(monkeypatch):
+    def gone(pid, sig):
+        raise ProcessLookupError(pid)
+    monkeypatch.setattr(stop_gate, "JUDGE_TIMEOUT_S", 1)
+    monkeypatch.setattr(stop_gate.os, "killpg", gone)
+    reason = stop_gate.judge_verdict(
+        "Merged the PR.", "", "", {"llm_judge_cmd": "sleep 2"})
+    assert reason is None
+
+
+def test_empty_last_assistant_message_judges_nothing(tmp_path):
+    dd = _data(tmp_path, _judge(BLOCK_CMD))
+    tr = make_transcript(tmp_path / "t.jsonl", [("text", "Merged the PR.")])
+    r = run_stop(stop_payload(tr, tmp_path, last_message=""), dd)
+    assert r.stdout.strip() == ""
+
+
+def test_null_last_assistant_message_falls_back_to_transcript(tmp_path):
+    dd = _data(tmp_path, _judge(BLOCK_CMD))
+    tr = make_transcript(tmp_path / "t.jsonl", [("text", "Merged the PR.")])
+    p = stop_payload(tr, tmp_path)
+    p["last_assistant_message"] = None
+    out = json.loads(run_stop(p, dd).stdout)
+    assert out["decision"] == "block"
+
+
+def test_judge_prompt_scopes_the_verdict_to_the_final_summary(tmp_path):
+    cap = tmp_path / "seen.txt"
+    dd = _data(tmp_path, _judge(_capture_cmd(str(cap))))
+    tr = make_transcript(tmp_path / "t.jsonl", [
+        ("text", "I ran the full suite and all tests pass."),
+    ])
+    run_stop(stop_payload(tr, tmp_path,
+                          last_message="I didn't run the tests; that claim "
+                                       "was wrong."), dd)
+    seen = cap.read_text()
+    rules = seen.split("=== AGENT FINAL SUMMARY ===")[0]
+    assert "Judge only the AGENT FINAL SUMMARY" in rules
+    assert "retracts or corrects" in rules

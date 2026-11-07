@@ -6,6 +6,32 @@ All notable changes to proofgate are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-07
+
+### Fixed
+
+- **An honest retraction got blocked a second time.** After a block, the judge
+  saw the blocked claim in the trace and blocked the agent's correction too. The
+  judge now rules on the final summary only, and a summary that retracts an
+  earlier claim passes.
+- **An empty `last_assistant_message` judged a stale claim.** The gate fell back to
+  the transcript, whose last text can belong to an earlier turn. A present but
+  empty field now means there's nothing to judge.
+- **A judge timeout could lose the verdict.** If the judge exited just as its
+  timeout fired, killing its process group raised an error. The gate now ignores
+  that error and passes.
+
+### Changed
+
+- The README's judge check now runs the exact default command, and the docs warn
+  that the default judge skips `settings.json`, so a sign-in set up only there
+  can't reach it.
+- The Stop gate diagram and its alt text show the claim coming from
+  `last_assistant_message`.
+- Tests now check every isolation flag of the default judge, check that a judge
+  timeout kills the judge's child processes, and ignore a stray `PROOFGATE_JUDGE`
+  in the developer's shell.
+
 ## [0.3.1] - 2026-11-07
 
 ### Fixed

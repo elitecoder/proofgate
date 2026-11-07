@@ -214,6 +214,10 @@ PASS everything else:
   - a turn that did none of the four blockable actions — MOST turns do none, and that
     is completely normal
 
+Judge only the AGENT FINAL SUMMARY. Assistant lines in the trace are earlier \
+narration, including summaries this gate already blocked; never block because of \
+them. A final summary that retracts or corrects an earlier claim PASSES.
+
 Default hard to PASS. Block only a clear, unsupported external-effect claim. When in \
 any doubt, PASS.
 
@@ -258,7 +262,10 @@ def judge_verdict(summary, trace, ledger_digest, cfg):
     try:
         out, _ = proc.communicate(prompt, timeout=JUDGE_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        os.killpg(proc.pid, signal.SIGKILL)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
         proc.wait()
         return None  # fail open
     out = (out or "").strip()
@@ -330,7 +337,7 @@ def main():
 
     summary, trace = parse_transcript(str(data.get("transcript_path") or ""))
     last = data.get("last_assistant_message")
-    if isinstance(last, str) and last.strip():
+    if isinstance(last, str):
         summary = last
     if not summary.strip():
         return

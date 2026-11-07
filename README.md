@@ -83,10 +83,12 @@ The hooks are live as soon as the plugin is installed.
    Confirm you get a reply:
 
    ```
-   echo 'Reply with exactly: PASS' | claude -p --model haiku --setting-sources '' --tools ''
+   echo 'Reply with exactly: PASS' | claude -p --model haiku --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands --tools ''
    ```
 
-   If it doesn't answer, set `llm_judge_cmd` in `config.json`. See
+   If it doesn't answer, set `llm_judge_cmd` in `config.json`. The default skips
+   your `settings.json`, so a sign-in that comes only from there (an `apiKeyHelper`,
+   or provider variables in its `env` block) won't reach the judge. See
    [Configuration](#configuration).
 
 2. **Watch the gatekeeper without waiting for an agent.** From the root of your
@@ -128,7 +130,7 @@ wedges a session.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/stop-gate-dark.png">
-  <img alt="Stop gate flowchart. If llm_judge is off, the turn already has 2 blocks, or the message says UNVERIFIED, the turn ends. Otherwise the gate renders the transcript (tool calls and real output, newest 24,000 characters) plus ledger kinds and pipes it to llm_judge_cmd. A verdict that starts with BLOCK blocks the stop and sends the reason back to the agent. PASS, an error, or a timeout lets the turn end." src="docs/images/stop-gate-light.png">
+  <img alt="Stop gate flowchart. If llm_judge is off, the turn already has 2 blocks, or the message says UNVERIFIED, the turn ends. Otherwise the gate takes the claim from last_assistant_message, renders the transcript (tool calls and real output, newest 24,000 characters) plus ledger kinds, and pipes it to llm_judge_cmd. A verdict that starts with BLOCK blocks the stop and sends the reason back to the agent. PASS, an error, or a timeout lets the turn end." src="docs/images/stop-gate-light.png">
 </picture>
 
 <picture>
