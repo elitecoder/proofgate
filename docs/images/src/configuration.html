@@ -1,0 +1,50 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="dark.js"></script>
+<style>.k{font-size:15px} svg text{font-size:16px} svg text.t{font-size:15px} svg text.n{font-size:17px;font-weight:500} svg text.mid{text-anchor:middle} svg text.end{text-anchor:end}</style></head>
+<body><div id="fig" style="width:1200px">
+<div class="k">configuration</div><div class="h">Which setting tunes <em>which</em> hook.</div>
+<p class="cap">Every key is optional, and unknown keys are ignored, so an older config still loads.</p>
+<svg viewBox="0 0 1104 580" width="1104" height="580" style="margin-top:28px">
+<defs><marker id="ah" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M2 1.5 L10 6 L2 10.5"/></marker><marker id="am" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="m" d="M2 1.5 L10 6 L2 10.5"/></marker></defs>
+<text class="n" x="0" y="16">$CLAUDE_PLUGIN_DATA</text>
+<text class="si" x="214" y="16">survives plugin updates</text>
+<rect class="faint" x="0" y="34" width="480" height="396" rx="6"/>
+<rect class="f" x="20" y="54" width="440" height="72" rx="4"/>
+<text class="n" x="40" y="84">rules.local.tsv</text>
+<text class="t" x="40" y="110">same id replaces; (?!) disables</text>
+<rect class="f" x="20" y="146" width="440" height="268" rx="4"/>
+<text class="n" x="40" y="178">config.json</text>
+<text class="si end" x="440" y="178">default</text>
+<text x="40" y="219">gates.llm_judge</text>
+<text class="t end" x="440" y="219">true</text>
+<text x="40" y="251">llm_judge_cmd</text>
+<text class="t end" x="440" y="251">haiku</text>
+<text x="40" y="303">notify_heads</text>
+<text class="t end" x="440" y="303">3 notifiers</text>
+<text x="40" y="335">notify_window_seconds</text>
+<text class="t end" x="440" y="335">300</text>
+<text x="40" y="395">scope_budget</text>
+<text class="t end" x="440" y="395">[50, 150]</text>
+<rect class="f" x="700" y="58" width="404" height="64" rx="4"/>
+<text class="n" x="720" y="86">gatekeeper</text>
+<text class="t" x="720" y="108">PreToolUse</text>
+<path d="M468 90 H696" marker-end="url(#ah)"/>
+<rect class="f" x="700" y="198" width="404" height="64" rx="4"/>
+<text class="n" x="720" y="226">stop-gate</text>
+<text class="t" x="720" y="248">Stop</text>
+<path d="M468 214 H696" marker-end="url(#ah)"/>
+<path d="M468 246 H696" marker-end="url(#ah)"/>
+<rect class="f" x="700" y="282" width="404" height="64" rx="4"/>
+<text class="n" x="720" y="310">notify-throttle</text>
+<text class="t" x="720" y="332">PreToolUse</text>
+<path d="M468 298 H696" marker-end="url(#ah)"/>
+<path d="M468 330 H696" marker-end="url(#ah)"/>
+<rect class="f" x="700" y="362" width="404" height="56" rx="4"/>
+<text class="n" x="720" y="396">scope-budget</text>
+<text class="t end" x="1084" y="396">PostToolUse</text>
+<path d="M468 390 H696" marker-end="url(#ah)"/>
+<rect class="f m" x="0" y="470" width="330" height="46" rx="4"/>
+<text class="mt mid" x="165" y="499">PROOFGATE_SCOPE_BUDGET</text>
+<path class="m" d="M338 493 H820 V422" marker-end="url(#am)"/>
+<text class="si mid" x="520" y="482">the env var wins</text>
+<text class="si" x="0" y="568">turn-context and agent-file-lint have no switch; remove them from hooks/hooks.json.</text>
+</svg></div></body></html>

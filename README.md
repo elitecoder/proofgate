@@ -1,90 +1,209 @@
-# proofgate
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/banner-dark.png">
+  <img alt="proofgate: agents say done, proofgate asks for receipts." src="docs/images/banner-light.png">
+</picture>
 
 **Agents say "done." proofgate asks for receipts.**
 
-If you run coding agents hard — parallel sessions, hours of autonomy, orchestrators feeding one agent's output to another — you already know the failure that matters most. It is not the agent that errors out. It is the agent that **reports success**. "All tests pass." "Pushed, PR opened." "Notification sent." You merge and move on, and two days later you discover the suite had been broken the whole time, the branch never left the machine, and the message was never sent. Every heavy agent user eventually merges a PR on the strength of a green-tests claim that nothing ever verified.
+Coding agents fail most expensively when they report success that didn't happen:
+"All tests pass." "Pushed, PR opened." "Notification sent." proofgate is a
+[Claude Code](https://claude.com/claude-code) plugin that checks those claims
+against what actually ran before the agent is allowed to stop, and stops destructive
+commands before they execute. It grew out of an audit of 5,020 real sessions, and
+its command rules were tuned on 93,931 real Bash commands.
 
-proofgate is a Claude Code plugin that closes that gap at the harness level. It cross-references the agent's claims against mechanically checkable state before the session is allowed to stop, gates destructive commands by parsing what will actually execute, and injects discipline at the exact prompt patterns where measured data says behavior slips.
+## What it looks like
 
-## Born from data
+**An unsupported claim.** The agent ends its turn with "Merged the PR," but nothing in
+the turn ran `git` or `gh`. The `Stop` hook's judge finds the claim unsupported and answers:
 
-proofgate was built from a forensic audit of **5,020 real Claude Code sessions** across six weeks of heavy multi-agent use:
+```json
+{"decision": "block", "reason": "LLM verify-gate: <one sentence from the judge: which claim is unsupported and what to do>"}
+```
 
-- **540 verified failure incidents**, clustered into **12 recurring failure modes** ([the field guide](docs/failure-modes.md))
-- every command gate tuned against **93,931 real Bash commands**
-- every claim gate tuned against **6,400 assistant-claim → user-reaction pairs**
-- every injector tuned against **13,107 prompts**
+The agent has to do the work, show the evidence, or mark the claim `UNVERIFIED`.
 
-The corpus itself is private session data and does not ship. What ships is the measurement pipeline: `/reliability-audit` computes the same statistics from your own local transcripts, so every number above is reproducible against your usage even though it cannot be re-derived from this repo.
+**An honest claim.** The same gate lets this turn through, shown the way the judge reads it:
 
-Two design lessons from that corpus, stated honestly:
+```text
+TOOL Bash [ok]: pnpm test:e2e auth.spec.ts
+  OUTPUT: Running 4 tests...
+  4 passed (48.6s)
+TOOL Bash [ok]: git push origin main
+  OUTPUT: main -> main
+ASSISTANT: All 4 auth specs are green and the fix is pushed.
+```
 
-**1. Naive done-claim regexes do not work.** Generic "sounds finished" patterns fired on **26–55% of benign turns** in the corpus — a gate that noisy gets disabled within a day. So proofgate's stop gate only acts on **checkable claims**: claims that map to state it can verify mechanically. Claimed "pushed"? It asks git. Claimed "sent"? It looks for a send-class command in the session. Edited a test file? It demands a recorded green run *after* that edit. No receipt, no stop.
+**A destructive command.** In a repo with uncommitted changes, the agent reaches for
+`git reset --hard HEAD`. The gatekeeper denies it before it runs:
 
-**2. Substring command-matching does not work.** Naive matchers false-positive on greps, heredocs, and commit messages *about* dangerous commands. So the gatekeeper parses **command heads** — the first tokens of every pipeline/`;`/`&&` segment, comments stripped, wrappers unwrapped — and matches those against rules. Measured on the corpus: a **0.73% fire-rate** (682 of 93,931 commands), and every single fire was a true dangerous invocation. Zero false positives from text that merely mentioned `rm -rf`.
+```text
+git reset --hard HEAD permanently discards uncommitted changes in a dirty repo.
+Denied: no valid grant token. A human must run
+CLAUDE_PLUGIN_DATA=<data-dir> <plugin-root>/bin/pg-grant git-discard-dirty
+from a real terminal, then retry within 15 minutes (tokens are single-use).
+```
 
-## Why hooks, not CLAUDE.md sermons
+A force push gets a flat no with a better option:
 
-Instructions decay. In the source data, standing rules had to be re-taught within **3 days** on average — and were violated **minutes after being restated**, while the rule was still in context. Prose asks; hooks enforce. A `Stop` hook that demands a git receipt does not get tired, does not get summarized away in compaction, and does not decide this one time is probably fine.
+```text
+Force push rewrites remote history. Use --force-with-lease instead (it refuses to
+overwrite commits you have not seen): git push --force-with-lease <remote> <branch>.
+```
 
-Harness enforcement is also model-agnostic: the same gates apply whatever model runs the session, today or after the next model swap.
-
-## What's in the box
-
-Read this table as the full disclosure of what the plugin will do to your sessions — including the always-on parts.
-
-| Component | Type | What it does |
-|---|---|---|
-| **verify-gate** | `Stop` hook | An LLM reads the session **transcript** — the agent's tool calls **and their real outputs** (test runs, git/gh commands, edits) plus the final summary — and blocks only when a summary asserts a specific external-effect action (pushed/merged, sent/posted, tests-pass/green, deployed) that the transcript does **not** support. Because it reads the actual output, an honest "specs green" backed by `4 passed (48.6s)` in a command's output passes; reporting a fact verified via `gh` passes; only a bare, unsupported external-effect claim blocks. The durable ledger is passed as a backstop in case the transcript was truncated by compaction. Caps itself at 2 blocks per turn; `UNVERIFIED:` in the final message is the escape hatch; **fails open** on any model/parse error. |
-| **gatekeeper** | `PreToolUse` hook | Head-parses every command segment against the rules TSV (shipped defaults + your overlay); deny/ask/require-token on destructive heads. 0.73% measured fire-rate, all true positives. |
-| **pg-grant** | CLI | TTY-gated, time-boxed (15 min), single-use override tokens for `require-token` rules. Only a human at a real terminal can mint one — an agent cannot grant itself. |
-| **turn-context** | `UserPromptSubmit` hook | Injects a UTC timestamp plus a 4-line communication-register card into **every** prompt (~30 tokens — this is the one always-on injection). Direct-order prompts ("just do it", "stop asking" — 0.4% of corpus prompts) additionally get an authority card; pushback prompts (0.1%) get a re-verify-before-conceding card. |
-| **notify-throttle** | `PreToolUse` hook | Denies more than one notification command (`notify-send`, `terminal-notifier`, ... — configurable) per 5-minute window per session, with instructions to buffer and send one rollup. An `ACTION:` payload bypasses it. |
-| **scope-budget** | `PostToolUse` hook | When the repo crosses a dirty/untracked-file threshold (default 50, then 150), blocks once per threshold and demands a one-line scope inventory before further edits. Configurable via `PROOFGATE_SCOPE_BUDGET` or `config.json` (`"scope_budget"`); set to `off` to disable. |
-| **agent-file-lint** | `PostToolUse` hook | Edits to `CLAUDE.md`/`AGENTS.md`/`SKILL.md` that add rationale prose ("because", "rationale", ...) or >250-char lines are bounced back with line-level feedback — agent-facing files state WHAT, never WHY. |
-| **/codify** | skill | Turns the correction you just typed into a self-tested gatekeeper rule instead of a sermon that decays. |
-| **/defer** | skill | Logs "I'll do that later" items as durable artifacts (DEFERRALS.md + GitHub issue) so deferred work survives the session instead of evaporating. |
-| **/repro-test** | skill | Baseline-red bug fixing: a failing reproduction is recorded before the fix, a green run and a `prove` receipt after. Skill-level discipline (model-followed prose), reinforced by the verify-gate's post-edit green requirement. |
-| **prove / prove-cov** | CLI | `prove` records a receipt when a command exits 0 with output. `prove-cov` additionally runs the command under coverage and records *which* files executed lines. Skill-facing (`/repro-test`) records of a proven run; the Stop gate reads the transcript directly, so running `prove` helps mainly by putting its output in that transcript. |
-| **/reliability-audit** | skill | Mines **your** local session transcripts, derives **your** failure modes, measures candidate rules against **your** corpus before you enable them. |
-
-## The part that makes it yours: /reliability-audit
-
-The shipped gates were tuned on one engineer's six weeks. Your failure modes are not identical to theirs.
-
-`/reliability-audit` reads your local Claude Code transcripts, clusters your own incidents, and — before any new rule goes live — replays your entire command history through it and reports the fire-rate with every line it would have caught. You see exactly what a rule costs in friction and what it buys in coverage, measured on your own usage, before it gates anything.
-
-**Privacy: everything stays on your machine.** The audit reads local transcript files, writes local reports, and sends nothing anywhere. proofgate has no telemetry, no network calls, no phone-home.
+The denials are real output from `scripts/gatekeeper/gatekeeper.py`, with local paths
+replaced and lines wrapped. The trace comes from `tests/test_verifygate_stopgate.py`.
 
 ## Install
 
-From GitHub (requires the repository to be published at that location):
+From GitHub:
 
 ```
 /plugin marketplace add elitecoder/proofgate
 /plugin install proofgate@proofgate
 ```
 
-From a local clone (no network needed — also the way to try it before it is published):
+From a local clone, with no network needed:
 
 ```
-git clone <repo-url> ~/proofgate
+git clone https://github.com/elitecoder/proofgate.git ~/proofgate
 /plugin marketplace add ~/proofgate
 /plugin install proofgate@proofgate
 ```
 
+proofgate needs `python3`; its hooks use only the standard library.
+
 ### Quick start
 
-The hook gates are live immediately after install:
+The hooks are live as soon as the plugin is installed.
 
-1. Let the agent claim "pushed" when commits never left the machine — the `Stop` gate asks git and blocks the stop with the discrepancy.
-2. Watch it reach for `git reset --hard` in a dirty repo — the gatekeeper denies it and prints the exact `pg-grant` command a human must run in a real terminal to mint a single-use, 15-minute token.
-3. Ask for a bug fix via `/repro-test` — a skill, not a hook, so it is model-followed discipline: failing repro first, then the fix, then a `prove` receipt the stop gate can see.
-4. After a week, run `/reliability-audit` to see what your own sessions say.
+1. **Make sure the judge can answer.** The `Stop` gate pipes its prompt into
+   `claude --bare -p --model haiku` by default, and if that command can't run, every
+   turn passes. Confirm you get a reply:
 
-### Configuration
+   ```
+   echo 'Reply with exactly: PASS' | claude --bare -p --model haiku
+   ```
 
-proofgate reads one optional config file, `config.json`, in the plugin's data directory (exposed to hooks as `$CLAUDE_PLUGIN_DATA`; state there survives plugin updates). It controls the Stop gate and the notification throttle:
+   If it doesn't answer, set `llm_judge_cmd` in `config.json`. See
+   [Configuration](#configuration).
+
+2. **Watch the gatekeeper without waiting for an agent.** From the root of your
+   clone, feed it the same JSON Claude Code would. A force push gets a `deny`:
+
+   ```
+   echo '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}' \
+     | python3 scripts/gatekeeper/gatekeeper.py
+   ```
+
+   A command that only mentions a force push prints nothing, meaning it's allowed:
+
+   ```
+   echo '{"tool_name":"Bash","tool_input":{"command":"grep -rn \"git push --force\" docs/"}}' \
+     | python3 scripts/gatekeeper/gatekeeper.py
+   ```
+
+3. **Fix a bug with `/repro-test`.** The agent writes a failing reproduction, then the
+   fix, then a `prove` run whose output lands in the transcript the judge reads.
+
+4. **After a week, run `/reliability-audit`** to see what your own sessions say.
+
+## How it works
+
+proofgate is hooks, skills, and local state, with no daemon and no telemetry. The only
+thing the hooks send anywhere is the `Stop` gate's prompt, which goes to whatever model
+`llm_judge_cmd` runs.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hook-lifecycle-dark.png">
+  <img alt="Timeline of one turn. When you send a prompt, turn-context adds a timestamp and a short card. Before each tool call, gatekeeper and notify-throttle can deny or ask. After each tool call, mark-dirty logs pushes, sends, commits, and test runs, while agent-file-lint and scope-budget can bounce an edit. When the agent tries to stop, stop-gate has a model read the transcript and block or pass." src="docs/images/hook-lifecycle-light.png">
+</picture>
+
+A hook at the moment of action doesn't get tired or summarized away by compaction.
+Every hook fails open: any internal error exits silently, so a broken proofgate never
+wedges a session.
+
+### The stop gate checks output, not wording
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/stop-gate-dark.png">
+  <img alt="Stop gate flowchart. If llm_judge is off, the turn already has 2 blocks, or the message says UNVERIFIED, the turn ends. Otherwise the gate renders the transcript (tool calls and real output, newest 24,000 characters) plus ledger kinds and pipes it to llm_judge_cmd. A verdict that starts with BLOCK blocks the stop and sends the reason back to the agent. PASS, an error, or a timeout lets the turn end." src="docs/images/stop-gate-light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/claims-dark.png">
+  <img alt="The four claims that can block and the receipt each needs: pushed or merged needs a git or gh command that did it; sent or posted needs a send command such as curl, mail, or gh pr comment; tests pass needs test output that shows a pass; deployed needs the deploy in the trace. Local edits, analysis, plans, questions, hedged statements, facts read back with gh, and anything marked UNVERIFIED pass." src="docs/images/claims-light.png">
+</picture>
+
+Generic "sounds finished" regexes fired on 26–55% of benign turns in the source corpus,
+so the judge reads the real tool output in the transcript and acts only on these four claims.
+
+### The gatekeeper parses commands, not text
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/head-parsing-dark.png">
+  <img alt="Two commands side by side. cd app &amp;&amp; sudo git push origin main --force splits into cd app and the push, sudo is dropped, and the head git push origin main --force matches git-push-force, so it's denied. grep -rn &quot;git push --force&quot; docs/ stays one segment because quoted text never splits; its head is grep, so it's allowed. A plain text search flags both." src="docs/images/head-parsing-light.png">
+</picture>
+
+On the corpus it fired on 0.73% of commands (682 of 93,931), and every hit was a real
+destructive invocation.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/gatekeeper-rules-dark.png">
+  <img alt="Rule order. Matching rules are checked deny first (rm-rf-outside-cwd, git-push-force), then require-token (git-discard-dirty runs once with a fresh token, otherwise it's denied with the pg-grant command), then ask (git-commit-no-verify, chmod-777). With no match, the command runs and the hook stays silent. Only pg-grant run by a person in a real terminal mints a token, which lasts 15 minutes for one use; from the agent's Bash tool, pg-grant refuses because stdin isn't a TTY." src="docs/images/gatekeeper-rules-light.png">
+</picture>
+
+For events, state layout, and schemas, see [architecture.md](docs/architecture.md).
+
+## Where the numbers come from
+
+proofgate started as a forensic audit of 5,020 real Claude Code sessions from six
+weeks of heavy multi-agent use:
+
+- 540 verified failure incidents, clustered into 12 recurring failure modes (the
+  [field guide](docs/failure-modes.md) adds a 13th from a later incident)
+- command gates tuned against 93,931 real Bash commands
+- claim gates tuned against 6,400 assistant-claim → user-reaction pairs
+- injectors tuned against 13,107 prompts
+
+The corpus is private session data and doesn't ship. `/reliability-audit` computes the
+same statistics from your own local transcripts.
+
+## What's in the box
+
+This table is the full list of what the plugin does to your sessions, including the
+parts that run on every prompt.
+
+| Component | Type | What it does |
+|---|---|---|
+| verify-gate | `Stop` hook | A model reads the transcript and blocks an unsupported push, send, test-pass, or deploy claim. Blocks at most twice per turn; `UNVERIFIED` skips it; fails open. |
+| gatekeeper | `PreToolUse` hook | Matches command heads against the shipped rules plus your `rules.local.tsv`, and answers deny, ask, or require-token. |
+| pg-grant | CLI | Mints a single-use, 15-minute override token for a `require-token` rule. Refuses to run without a TTY. |
+| turn-context | `UserPromptSubmit` hook | Adds a UTC timestamp and a 4-line card to every prompt (about 30 tokens). Direct orders (0.4% of corpus prompts) get an authority card; pushback (0.1%) gets a re-verify card. |
+| notify-throttle | `PreToolUse` hook | Denies a second notification command within 5 minutes per session and asks for one rollup. An `ACTION:` payload goes through. |
+| scope-budget | `PostToolUse` hook | Blocks once when the repo crosses 50, then 150, dirty files, and asks for a one-line scope inventory. |
+| agent-file-lint | `PostToolUse` hook | Bounces rationale prose and lines over 250 characters in `CLAUDE.md`, `AGENTS.md`, `SKILL.md`, and other agent-facing files. |
+| `/codify` | skill | Turns your correction into a gatekeeper rule, then self-tests it against a must-catch command and a near-miss. |
+| `/defer` | skill | Records "later" as a DEFERRALS.md line with a concrete trigger, plus a GitHub issue when `gh` works. |
+| `/repro-test` | skill | Failing reproduction first, then the fix, a green run, and a `prove` receipt. Model-followed, not a hook. |
+| prove, prove-cov | CLI | Record a receipt when a command exits 0 with output; `prove-cov` also records which files executed lines. Their output lands in the transcript the judge reads. |
+| `/reliability-audit` | skill | Mines your local transcripts, clusters your failure modes, and measures candidate rules against your own commands. |
+
+## Make it yours with /reliability-audit
+
+The shipped gates were tuned on one engineer's six weeks, so your failure modes won't
+match exactly. `/reliability-audit` mines your local transcripts and measures each
+candidate rule against your own command history before it gates anything.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/reliability-audit-dark.png">
+  <img alt="Audit flow, all on your machine: your transcripts in ~/.claude/projects go to triage.py, which scores sessions for frustration; the agent clusters what went wrong; extract_corpus.py collects every command you ran; you draft rules; eval_rules.py measures fire-rate and recall and loops back to tighten any rule over about 1%; you choose; /codify self-tests and installs into rules.local.tsv." src="docs/images/reliability-audit-light.png">
+</picture>
+
+## Configuration
+
+proofgate reads one optional file, `config.json`, in the plugin's data directory
+(`$CLAUDE_PLUGIN_DATA`, which survives plugin updates):
 
 ```json
 {
@@ -98,46 +217,61 @@ proofgate reads one optional config file, `config.json`, in the plugin's data di
 }
 ```
 
-The Stop gate **is** the LLM judge (`llm_judge`, default on). It renders the session **transcript** — every tool call and its real output (a test runner's `4 passed`, a `git push`'s output, edits), in order — together with the final summary, and asks the model whether the summary asserts a specific external-effect action (pushed/merged, sent/posted, tests-pass, deployed) that the transcript does **not** support. It reads the actual output rather than a classified ledger, so an honest "specs green" with passing test output, or a report of a fact verified via `gh`, passes; only a bare, unsupported external-effect claim blocks. The durable ledger (recorded action kinds) is passed only as a backstop for a transcript truncated by compaction. It **fails open** on any model/parse error, caps at 2 blocks per turn, and honours `UNVERIFIED:` as an escape hatch. Set `"gates": {"llm_judge": false}` to turn the gate off entirely; override the model with `llm_judge_cmd`. `scope_budget` sets the dirty-file thresholds (default `[50, 150]`); `false` or `0` disables it, and the `PROOFGATE_SCOPE_BUDGET` env var overrides this key. The gatekeeper is configured through its rules files, not `config.json`; the turn-context and agent-file-lint injectors have no config switches in this release — disabling them means removing their `hooks/hooks.json` entries from your checkout.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/configuration-dark.png">
+  <img alt="Settings map. In $CLAUDE_PLUGIN_DATA, rules.local.tsv feeds the gatekeeper. In config.json, gates.llm_judge and llm_judge_cmd feed stop-gate, notify_heads and notify_window_seconds feed notify-throttle, and scope_budget feeds scope-budget. The PROOFGATE_SCOPE_BUDGET environment variable wins over scope_budget. turn-context and agent-file-lint have no switch." src="docs/images/configuration-light.png">
+</picture>
 
-Add your own command rules in `$CLAUDE_PLUGIN_DATA/rules.local.tsv` — a single overlay file, never touched by updates. A row whose id matches a shipped default replaces it (a never-matching pattern like `(?!)` disables one). See the [rules.tsv schema](docs/architecture.md#rulestsv-schema) and the measure-before-enable workflow.
+To turn off the `Stop` gate, set `"llm_judge": false`. To turn off the scope budget,
+set `scope_budget` or `PROOFGATE_SCOPE_BUDGET` to `0`. [configuration.md](docs/configuration.md)
+covers every key, the shipped rules, and override tokens. To write a rule, see the
+[rules.tsv schema](docs/architecture.md#rulestsv-schema).
 
-Every hook **fails open**: any internal error exits silently and the session proceeds as if proofgate were not installed. A broken safety layer must never wedge your session.
-
-### Uninstall
+## Uninstall
 
 ```
 /plugin uninstall proofgate@proofgate
 /plugin marketplace remove proofgate
 ```
 
-**Both steps are required for a directory-source install.** If you added proofgate from a local clone (`/plugin marketplace add ~/proofgate`), the marketplace registration alone is enough to keep the hooks loading: Claude Code auto-enables a registered marketplace plugin when there is no explicit `enabledPlugins` entry for it (a plugin's `defaultEnabled` defaults to `true`). proofgate ships `"defaultEnabled": false` in its marketplace manifest specifically so a bare directory registration no longer auto-enables — but a registration left over from before this release still resolves to enabled. Removing the marketplace (`/plugin marketplace remove proofgate`, which clears the `extraKnownMarketplaces` entry) is what actually stops the hooks. A GitHub install (`/plugin marketplace add elitecoder/proofgate`) behaves the same way.
-
-To keep proofgate registered but turned off, set `"enabledPlugins": {"proofgate@proofgate": false}` — an explicit `false` always wins over the marketplace default.
-
-Then delete the data directories if you want a clean slate. Hooks write under `$CLAUDE_PLUGIN_DATA`, but two documented fallbacks exist for state written outside hook context: `~/.claude/proofgate` (`pg-grant` tokens and local rules when `$CLAUDE_PLUGIN_DATA` is unset) and `~/.local/share/proofgate` (`prove` receipts — `prove` runs inside the agent's Bash tool, where `$CLAUDE_PLUGIN_DATA` is not exported). `/defer` output (DEFERRALS.md lines, GitHub issues) is work product in your repos, not plugin state, and is deliberately left in place.
+Run both. A marketplace that's still registered can keep the hooks loading even
+after the plugin is uninstalled. To keep proofgate registered but off, set
+`"enabledPlugins": {"proofgate@proofgate": false}`. For why, and which local
+directories to delete for a clean slate, see
+[uninstall details](docs/configuration.md#uninstall).
 
 ## Is this for you?
 
-Value scales with how hard you push agents.
+The value scales with how hard you push agents.
 
 - **Casual, single-session use:** modest value. You're watching every turn anyway.
-- **Long autonomous sessions:** real value. The claims you can't watch are exactly the ones that need receipts.
-- **Parallel agents and orchestration:** maximum value. In a pipeline, one agent's unverified "done" becomes another agent's input, and a single phantom completion propagates through everything downstream. This is the usage pattern the source corpus came from, and the one proofgate was tuned for.
+- **Long autonomous sessions:** real value. The claims you can't watch are the ones
+  that need receipts.
+- **Parallel agents and orchestration:** the most value. In a pipeline, one agent's
+  unverified "done" becomes another agent's input, and a single phantom completion
+  spreads to everything downstream. The source corpus came from this kind of use,
+  and proofgate was tuned for it.
 
 ## Roadmap
 
-- **Model-in-the-loop evals with baseline-red discipline:** every eval must demonstrably fail without the plugin before it counts as a test of the plugin.
-- **Hook-enforced red→green:** the ledger already records failing runs; a future gate tier will require a recorded red before the green for edited tests, instead of leaving red-first discipline to `/repro-test` prose.
-- **Block-reason effectiveness matrix:** measure which block phrasings actually change agent behavior, per model — a block reason that gets argued with is a bad block reason.
-- **Community rules:** shared rules-TSV packs, each published with its measured fire-rate so you know the friction cost before you import it.
+- **Model-in-the-loop evals with baseline-red discipline:** every eval must fail
+  without the plugin before it counts as a test of the plugin.
+- **Hook-enforced red→green:** the ledger already records failing runs. A future
+  gate will require a recorded red before the green for edited tests, instead of
+  leaving red-first discipline to `/repro-test`.
+- **Block-reason effectiveness matrix:** measure which block phrasings actually
+  change agent behavior, per model. A block reason the agent argues with is a bad
+  block reason.
+- **Community rules:** shared rules-TSV packs, each published with its measured
+  fire-rate, so you know the friction cost before you import one.
 
 ## Docs
 
-- [The failure modes — an anonymized field guide](docs/failure-modes.md)
-- [Architecture: events, scripts, state, schemas](docs/architecture.md)
+- [The failure modes: an anonymized field guide](docs/failure-modes.md)
+- [Configuration and uninstall](docs/configuration.md)
+- [Architecture: events, scripts, state, and schemas](docs/architecture.md)
 - [Changelog](CHANGELOG.md)
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).

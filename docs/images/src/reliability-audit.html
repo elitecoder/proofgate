@@ -1,0 +1,51 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="kit.css"><script src="dark.js"></script>
+<style>.k{font-size:15px} svg text{font-size:16px} svg text.t{font-size:15px} svg text.n{font-size:17px;font-weight:500} svg text.mid{text-anchor:middle} svg text.end{text-anchor:end}</style></head>
+<body><div id="fig" style="width:1200px">
+<div class="k">/reliability-audit</div><div class="h">Measure a rule <em>before</em> it gates anything.</div>
+<p class="cap">Each candidate rule replays your own command history first, so you see its friction before you turn it on.</p>
+<svg viewBox="0 0 1104 440" width="1104" height="440" style="margin-top:28px">
+<defs><marker id="ah" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M2 1.5 L10 6 L2 10.5"/></marker><marker id="am" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="12" markerHeight="12" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="m" d="M2 1.5 L10 6 L2 10.5"/></marker></defs>
+<rect class="faint d" x="8" y="30" width="1088" height="400" rx="6"/>
+<text class="si" x="8" y="16">everything stays on your machine</text>
+<rect class="w" x="29" y="60" width="230" height="104" rx="4"/>
+<text class="n" x="45" y="92">your transcripts</text>
+<text class="t" x="45" y="118">~/.claude/projects,</text>
+<text class="t" x="45" y="140">read in place</text>
+<path d="M263 112.0 H297" marker-end="url(#ah)"/>
+<rect class="f" x="301" y="60" width="230" height="104" rx="4"/>
+<text class="n" x="317" y="92">triage.py</text>
+<text class="t" x="317" y="118">scores sessions for</text>
+<text class="t" x="317" y="140">frustration</text>
+<path d="M535 112.0 H569" marker-end="url(#ah)"/>
+<rect class="f" x="573" y="60" width="230" height="104" rx="4"/>
+<text class="n" x="589" y="92">cluster</text>
+<text class="t" x="589" y="118">the agent groups</text>
+<text class="t" x="589" y="140">what went wrong</text>
+<path d="M807 112.0 H841" marker-end="url(#ah)"/>
+<rect class="f" x="845" y="60" width="230" height="104" rx="4"/>
+<text class="n" x="861" y="92">extract_corpus.py</text>
+<text class="t" x="861" y="118">every command you</text>
+<text class="t" x="861" y="140">ever ran</text>
+<rect class="f" x="29" y="230" width="230" height="104" rx="4"/>
+<text class="n" x="45" y="262">draft rules</text>
+<text class="t" x="45" y="288">candidate rows</text>
+<text class="t" x="45" y="310">in rules TSV form</text>
+<path d="M263 282.0 H297" marker-end="url(#ah)"/>
+<rect class="f m" x="301" y="230" width="230" height="104" rx="4"/>
+<text class="n mt" x="317" y="262">eval_rules.py</text>
+<text class="t" x="317" y="288">fire-rate on your</text>
+<text class="t" x="317" y="310">commands, recall</text>
+<path d="M535 282.0 H569" marker-end="url(#ah)"/>
+<rect class="f" x="573" y="230" width="230" height="104" rx="4"/>
+<text class="n" x="589" y="262">you choose</text>
+<text class="t" x="589" y="288">nothing installs</text>
+<text class="t" x="589" y="310">without a yes</text>
+<path d="M807 282.0 H841" marker-end="url(#ah)"/>
+<rect class="f" x="845" y="230" width="230" height="104" rx="4"/>
+<text class="n" x="861" y="262">/codify</text>
+<text class="t" x="861" y="288">self-tests, then</text>
+<text class="t" x="861" y="310">rules.local.tsv</text>
+<path d="M960.0 168 V197.0 H144.0 V226" marker-end="url(#ah)"/>
+<path class="d" d="M416.0 338 C416.0 384, 144.0 384, 144.0 340" marker-end="url(#ah)"/>
+<text class="si mid" x="280.0" y="398">over ~1%: tighten and rerun</text>
+</svg></div></body></html>
