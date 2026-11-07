@@ -1,6 +1,6 @@
 {
   "name": "proofgate",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Agents say done; proofgate asks for receipts. A Stop gate where an LLM reads the session transcript (tool calls and their real outputs) and blocks unsupported external-effect claims, a head-parsing command gatekeeper, and prompt-pattern context injectors - all fail-open.",
   "author": {
     "name": "Mukul Sharma"

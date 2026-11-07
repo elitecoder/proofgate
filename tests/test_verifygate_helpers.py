@@ -14,6 +14,7 @@ PROVE_COV = ROOT / "bin" / "prove-cov"
 def run_stop(payload, data_dir, raw=None, env_extra=None):
     env = dict(os.environ)
     env["CLAUDE_PLUGIN_DATA"] = str(data_dir)
+    env.pop("PROOFGATE_JUDGE", None)
     env.update(env_extra or {})
     stdin = raw if raw is not None else json.dumps(payload)
     return subprocess.run(["sh", str(STOP)], input=stdin,
