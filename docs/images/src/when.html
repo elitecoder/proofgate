@@ -1,0 +1,15 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css"><style>
+.row{display:flex;align-items:flex-start}
+.step{flex:1;text-align:center;position:relative}
+.dot{width:18px;height:18px;border-radius:50%;border:2px solid var(--mut);background:var(--bg);margin:0 auto 12px;position:relative;z-index:1}
+.step:not(:last-child)::after{content:"";position:absolute;top:9px;left:50%;width:100%;border-top:2px solid var(--line)}
+.on .dot{border-color:var(--red);background:var(--red)}
+.t{font-weight:600;font-size:18px}
+.d{color:var(--mut);font-size:15px;margin-top:4px;padding:0 10px}
+.on .t{color:var(--red)}
+</style><body><div class="row">
+<div class="step"><div class="dot"></div><div class="t">You ask</div><div class="d">ProofGate adds the time and a short reply-style reminder.</div></div>
+<div class="step on"><div class="dot"></div><div class="t">Before each command</div><div class="d">Risky commands are stopped or wait for you.</div></div>
+<div class="step"><div class="dot"></div><div class="t">After each command</div><div class="d">Pushes and test runs are noted. Edits pause at 50 changed files.</div></div>
+<div class="step on"><div class="dot"></div><div class="t">Before “done”</div><div class="d">A second model checks each claim against what ran.</div></div>
+</div></body>

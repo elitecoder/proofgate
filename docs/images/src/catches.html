@@ -1,0 +1,21 @@
+<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="style.css"><style>
+.grid{display:grid;grid-template-columns:1fr 28px 1fr 28px 210px;align-items:center;row-gap:16px}
+.h{font-size:13px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;padding-bottom:2px}
+.say{background:var(--soft);border:1px solid var(--line);border-radius:14px 14px 14px 4px;padding:14px 16px;font-size:18px}
+.chk{border-left:3px solid var(--line);padding:4px 0 4px 14px;color:var(--fg)}
+.chk small{display:block;color:var(--mut);font-size:14px}
+.arr{color:var(--mut);text-align:center;font-size:20px}
+.out{border-radius:999px;padding:10px 16px;font-weight:600;font-size:16px;text-align:center}
+.r{background:var(--redbg);color:var(--red)}.a{background:var(--ambbg);color:var(--amb)}.b{background:var(--blubg);color:var(--blu)}
+</style><body><div class="grid">
+<div class="h">Your agent</div><div></div><div class="h">ProofGate checks</div><div></div><div class="h">What happens</div>
+<div class="say">“Fixed. All tests pass.”</div><div class="arr">→</div>
+<div class="chk">Did any tests run?<small>No test output this turn.</small></div><div class="arr">→</div>
+<div class="out r">Sent back to run them</div>
+<div class="say"><code>git reset --hard</code><br><span style="font-size:15px;color:var(--mut)">with 3 unsaved files</span></div><div class="arr">→</div>
+<div class="chk">Would this erase your work?<small>Yes, it can’t be undone.</small></div><div class="arr">→</div>
+<div class="out a">Waits for your OK</div>
+<div class="say">“I’ll handle that later.”</div><div class="arr">→</div>
+<div class="chk">When is later?<small>A follow-up needs a trigger.</small></div><div class="arr">→</div>
+<div class="out b">Written down</div>
+</div></body>
