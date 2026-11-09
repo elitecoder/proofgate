@@ -35,8 +35,9 @@ Claude Code session
 │                              thresholds (PROOFGATE_SCOPE_BUDGET / config.json)
 │
 └── Stop ──────────────────▶ scripts/verify-gate/stop-gate.sh
-      stdin: {transcript_path} renders the turn's tool calls + their real outputs
-                               and the final summary, and asks an LLM whether the
+      stdin: {transcript_path, renders the turn's tool calls + their real outputs
+        last_assistant_message} from the transcript, takes the final summary from
+                               last_assistant_message, and asks an LLM whether the
                                summary's external-effect claims are supported by
                                that transcript (durable ledger passed as a
                                compaction backstop only)

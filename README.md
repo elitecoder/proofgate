@@ -72,14 +72,17 @@ proofgate needs `python3`; its hooks use only the standard library.
 The hooks are live as soon as the plugin is installed.
 
 1. **Make sure the judge can answer.** The `Stop` gate pipes its prompt into
-   `claude --bare -p --model haiku` by default, and if that command can't run, every
-   turn passes. Confirm you get a reply:
+   `claude -p --model haiku` by default (with your normal Claude Code sign-in and no
+   settings, plugins, or tools), and if that command can't run, every turn passes.
+   Confirm you get a reply:
 
    ```
-   echo 'Reply with exactly: PASS' | claude --bare -p --model haiku
+   echo 'Reply with exactly: PASS' | claude -p --model haiku --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands --tools ''
    ```
 
-   If it doesn't answer, set `llm_judge_cmd` in `config.json`. See
+   If it doesn't answer, set `llm_judge_cmd` in `config.json`. The default skips
+   your `settings.json`, so a sign-in that comes only from there (an `apiKeyHelper`,
+   or provider variables in its `env` block) won't reach the judge. See
    [Configuration](#configuration).
 
 2. **Watch the gatekeeper without waiting for an agent.** From the root of your
@@ -167,7 +170,7 @@ proofgate reads one optional file, `config.json`, in the plugin's data directory
   "gates": {
     "llm_judge": true
   },
-  "llm_judge_cmd": "claude --bare -p --model haiku",
+  "llm_judge_cmd": "claude -p --model haiku --setting-sources '' --strict-mcp-config --no-session-persistence --disable-slash-commands --tools ''",
   "notify_heads": ["notify-send", "terminal-notifier"],
   "notify_window_seconds": 300,
   "scope_budget": [50, 150]
